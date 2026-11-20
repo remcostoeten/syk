@@ -1,0 +1,1149 @@
+use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
+use std::fs::{self, FileType};
+use std::io::{self, IsTerminal, Write};
+use std::os::unix::ffi::OsStrExt;
+use std::path::{Component, Path};
+use std::process::ExitCode;
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
+
+use grep_matcher::Matcher;
+use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
+use ignore::overrides::{Override, OverrideBuilder};
+use ignore::{DirEntry, WalkBuilder, WalkState};
+
+use crate::act;
+use crate::output::{Budget, Entry, Layout, Lines, Style, write_count, write_entry};
+use crate::pattern::Pattern;
+use crate::query::{Filters, Format, Kind, Matching, Plan, Query, Targets, Terms};
+use crate::rank::{self, Block, Habits, Score};
+use crate::spell::{self, Gather, Seen};
+
+const CHUNK: usize = 64 * 1024;
+const WAIT: Duration = Duration::from_millis(10);
+
+#[allow(clippy::large_enum_variant)]
+pub enum Compiled {
+    Union {
+        pattern: Option<Pattern>,
+        targets: Targets,
+    },
+    Narrow {
+        dir: Option<Pattern>,
+        name: Option<Pattern>,
+        content: Option<Pattern>,
+    },
+}
+
+pub fn compile(query: &Query) -> Result<Compiled, String> {
+    let build = |terms: &Option<Terms>| -> Result<Option<Pattern>, String> {
+        terms
+            .as_deref()
+            .map(|terms| Pattern::compile(terms, &query.matching))
+            .transpose()
+    };
+    Ok(match &query.plan {
+        Plan::Union { pattern, targets } => Compiled::Union {
+            pattern: build(pattern)?,
+            targets: *targets,
+        },
+        Plan::Narrow { dir, name, content } => Compiled::Narrow {
+            dir: build(dir)?,
+            name: build(name)?,
+            content: build(content)?,
+        },
+    })
+}
+
+struct Shared {
+    plan: Compiled,
+    filters: Filters,
+    folders: bool,
+    stat: bool,
+    cutoffs: Vec<(bool, SystemTime)>,
+    layout: Layout,
+    color: bool,
+    json: bool,
+    end: u8,
+    base: Option<Vec<u8>>,
+    live: bool,
+    context: usize,
+    budget: Budget,
+    found: AtomicBool,
+    failed: AtomicBool,
+    quiet: bool,
+    gather: bool,
+    fold: bool,
+    seen: Mutex<Seen>,
+    keep: bool,
+    blocks: Mutex<Vec<Block>>,
+    tally: Mutex<Tally>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Tally {
+    entries: u64,
+    read: u64,
+    lines: u64,
+    files: u64,
+    names: u64,
+}
+
+impl Tally {
+    fn add(&mut self, other: Tally) {
+        self.entries += other.entries;
+        self.read += other.read;
+        self.lines += other.lines;
+        self.files += other.files;
+        self.names += other.names;
+    }
+}
+
+impl Shared {
+    fn style(&self) -> Style<'_> {
+        Style {
+            color: self.color,
+            json: self.json,
+            end: self.end,
+            base: self.base.as_deref(),
+        }
+    }
+
+    fn fail(&self, message: impl std::fmt::Display) {
+        self.failed.store(true, Ordering::Relaxed);
+        if !self.quiet {
+            eprintln!("syk: {message}");
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct View {
+    layout: Layout,
+    color: bool,
+    live: bool,
+    json: bool,
+    end: u8,
+    links: bool,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Pass {
+    First,
+    Gather { fold: bool },
+    Again,
+}
+
+struct Outcome {
+    found: bool,
+    failed: bool,
+    seen: Seen,
+    blocks: Vec<Block>,
+    tally: Tally,
+}
+
+struct Worker<'a> {
+    shared: &'a Shared,
+    searcher: Searcher,
+    out: Vec<u8>,
+    flushed: Instant,
+    scope: (OsString, bool),
+    seen: Seen,
+    scratch: Seen,
+    blocks: Vec<Block>,
+    quality: f32,
+    line: Option<u64>,
+    tally: Tally,
+}
+
+impl<'a> Worker<'a> {
+    fn new(shared: &'a Shared) -> Worker<'a> {
+        let searcher = SearcherBuilder::new()
+            .binary_detection(BinaryDetection::quit(0))
+            .line_number(true)
+            .before_context(shared.context)
+            .after_context(shared.context)
+            .build();
+        Worker {
+            shared,
+            searcher,
+            out: Vec::with_capacity(CHUNK),
+            flushed: Instant::now(),
+            scope: (OsString::new(), false),
+            seen: Seen::new(),
+            scratch: Seen::new(),
+            blocks: Vec::new(),
+            quality: 0.0,
+            line: None,
+            tally: Tally::default(),
+        }
+    }
+
+    fn visit(&mut self, result: Result<DirEntry, ignore::Error>) -> WalkState {
+        if self.shared.budget.stopped() {
+            return WalkState::Quit;
+        }
+        let entry = match result {
+            Ok(entry) => entry,
+            Err(error) => {
+                self.shared.fail(error);
+                return WalkState::Continue;
+            }
+        };
+        let Some(kind) = entry.file_type() else {
+            return WalkState::Continue;
+        };
+        self.quality = 0.0;
+        self.line = None;
+        self.tally.entries += 1;
+        if kind.is_dir() {
+            if entry.depth() > 0 {
+                self.folder(&entry);
+            }
+        } else {
+            self.file(&entry, kind);
+        }
+        if self.shared.keep {
+            self.keep(&entry);
+        } else {
+            self.settle();
+        }
+        WalkState::Continue
+    }
+
+    fn keep(&mut self, entry: &DirEntry) {
+        if self.out.is_empty() {
+            return;
+        }
+        self.blocks.push(Block {
+            path: display(entry.path()).to_vec(),
+            quality: self.quality,
+            depth: entry.depth(),
+            modified: entry
+                .metadata()
+                .ok()
+                .and_then(|metadata| metadata.modified().ok()),
+            line: self.line,
+            text: std::mem::take(&mut self.out),
+        });
+    }
+
+    fn folder(&mut self, entry: &DirEntry) {
+        let shared = self.shared;
+        if !shared.folders {
+            return;
+        }
+        let name = entry.file_name().as_bytes();
+        let hit = match &shared.plan {
+            Compiled::Union { pattern, targets } => {
+                if !targets.dirs {
+                    return;
+                }
+                match pattern {
+                    None => None,
+                    Some(pattern) => match pattern.find(name) {
+                        Some(found) => Some(found),
+                        None => return,
+                    },
+                }
+            }
+            Compiled::Narrow {
+                dir,
+                name: wanted,
+                content,
+            } => {
+                let (Some(wanted), None) = (wanted, content) else {
+                    return;
+                };
+                if let Some(dir) = dir
+                    && !self.in_scope(entry, dir)
+                {
+                    return;
+                }
+                match wanted.find(name) {
+                    Some(found) => Some(found),
+                    None => return,
+                }
+            }
+        };
+        let path = display(entry.path());
+        self.quality = rank::quality(name, hit);
+        self.path_line(
+            &Entry {
+                path,
+                name_at: path.len().saturating_sub(name.len()),
+                hit,
+                folder: true,
+            },
+            true,
+        );
+    }
+
+    fn file(&mut self, entry: &DirEntry, kind: FileType) {
+        let shared = self.shared;
+        match shared.filters.kind {
+            Some(Kind::Dir) => return,
+            Some(Kind::File) if !kind.is_file() => return,
+            Some(Kind::Link) if !kind.is_symlink() => return,
+            _ => {}
+        }
+        let name = entry.file_name().as_bytes();
+        let extensions = &shared.filters.extensions;
+        if !extensions.is_empty()
+            && !extensions
+                .iter()
+                .any(|extension| ends_with(name, extension))
+        {
+            return;
+        }
+        if shared.stat && !self.passes_stat(entry) {
+            return;
+        }
+
+        let (hit, alone, content) = match &shared.plan {
+            Compiled::Union { pattern, targets } => {
+                let hit = match pattern {
+                    _ if !targets.files => None,
+                    None => Some(None),
+                    Some(pattern) => pattern.find(name).map(Some),
+                };
+                let content = pattern.as_ref().filter(|_| targets.content);
+                (hit, true, content)
+            }
+            Compiled::Narrow {
+                dir,
+                name: wanted,
+                content,
+            } => {
+                if let Some(dir) = dir
+                    && !self.in_scope(entry, dir)
+                {
+                    return;
+                }
+                let hit = match wanted {
+                    None => None,
+                    Some(wanted) => match wanted.find(name) {
+                        Some(found) => Some(Some(found)),
+                        None => return,
+                    },
+                };
+                (hit, content.is_none(), content.as_ref())
+            }
+        };
+
+        let path = display(entry.path());
+        let item = Entry {
+            path,
+            name_at: path.len().saturating_sub(name.len()),
+            hit: hit.flatten(),
+            folder: false,
+        };
+        let named = alone && hit.is_some();
+        self.quality = rank::quality(name, item.hit);
+        let Some(pattern) = content.filter(|_| kind.is_file()) else {
+            if named {
+                self.path_line(&item, true);
+            }
+            return;
+        };
+        if named && matches!(shared.layout, Layout::Flat | Layout::List) {
+            self.path_line(&item, true);
+            if shared.layout == Layout::List {
+                return;
+            }
+        }
+
+        if shared.gather {
+            let mut sink = Gather {
+                matcher: pattern.lines(),
+                seen: &mut self.scratch,
+                fold: shared.fold,
+                binary: false,
+            };
+            let searched = self
+                .searcher
+                .search_path(pattern.lines(), entry.path(), &mut sink);
+            if sink.binary || searched.is_err() {
+                self.scratch.clear();
+            }
+            spell::merge(&mut self.seen, &mut self.scratch);
+            return;
+        }
+
+        let (headed, hits) = if pattern.single() {
+            self.read(pattern.lines(), entry, &item)
+        } else {
+            self.read(pattern, entry, &item)
+        };
+        match shared.layout {
+            Layout::List if hits > 0 => self.path_line(&item, false),
+            Layout::Count if hits > 0 => self.count_line(&item, hits),
+            Layout::Count if named => self.path_line(&item, true),
+            Layout::Grouped if headed => self.out.push(b'\n'),
+            Layout::Grouped if named => self.path_line(&item, true),
+            _ => {}
+        }
+    }
+
+    fn read<M: Matcher>(&mut self, matcher: &M, entry: &DirEntry, item: &Entry<'_>) -> (bool, u64) {
+        let shared = self.shared;
+        let start = self.out.len();
+        let mut sink = Lines {
+            out: &mut self.out,
+            entry: item,
+            matcher,
+            layout: shared.layout,
+            style: shared.style(),
+            budget: &shared.budget,
+            headed: false,
+            hits: 0,
+            first: None,
+            binary: false,
+        };
+        let result = self.searcher.search_path(matcher, entry.path(), &mut sink);
+        let (mut headed, mut hits, first) = (sink.headed, sink.hits, sink.first);
+        if sink.binary {
+            self.out.truncate(start);
+            (headed, hits) = (false, 0);
+        }
+        if let Err(error) = result {
+            shared.fail(format_args!("{}: {error}", entry.path().display()));
+        }
+        self.tally.read += 1;
+        if hits > 0 {
+            shared.found.store(true, Ordering::Relaxed);
+            self.line = first;
+            self.tally.files += 1;
+            if shared.layout != Layout::List {
+                self.tally.lines += hits;
+            }
+        }
+        (headed, hits)
+    }
+
+    fn path_line(&mut self, entry: &Entry<'_>, named: bool) {
+        if self.shared.gather {
+            if let Some((start, end)) = entry.hit {
+                let name = &entry.path[entry.name_at.min(entry.path.len())..];
+                spell::note(&mut self.seen, name, start, end, self.shared.fold);
+            }
+            return;
+        }
+        if !self.shared.budget.take() {
+            return;
+        }
+        write_entry(&mut self.out, entry, self.shared.style());
+        self.tally.names += u64::from(named);
+        self.shared.found.store(true, Ordering::Relaxed);
+    }
+
+    fn count_line(&mut self, entry: &Entry<'_>, count: u64) {
+        if self.shared.budget.take() {
+            write_count(&mut self.out, entry, count, self.shared.style());
+        }
+    }
+
+    fn in_scope(&mut self, entry: &DirEntry, dir: &Pattern) -> bool {
+        let Some(parent) = entry.path().parent() else {
+            return false;
+        };
+        if self.scope.0 == parent.as_os_str() {
+            return self.scope.1;
+        }
+        let inside = parent
+            .components()
+            .rev()
+            .take(entry.depth().saturating_sub(1))
+            .any(|part| match part {
+                Component::Normal(name) => dir.find(name.as_bytes()).is_some(),
+                _ => false,
+            });
+        self.scope = (parent.as_os_str().to_os_string(), inside);
+        inside
+    }
+
+    fn passes_stat(&self, entry: &DirEntry) -> bool {
+        let Ok(metadata) = entry.metadata() else {
+            return false;
+        };
+        let size = metadata.len();
+        let sized = self.shared.filters.sizes.iter().all(|filter| {
+            if filter.at_least {
+                size >= filter.bytes
+            } else {
+                size <= filter.bytes
+            }
+        });
+        if !sized || self.shared.cutoffs.is_empty() {
+            return sized;
+        }
+        let Ok(modified) = metadata.modified() else {
+            return false;
+        };
+        self.shared.cutoffs.iter().all(|(older, cutoff)| {
+            if *older {
+                modified <= *cutoff
+            } else {
+                modified >= *cutoff
+            }
+        })
+    }
+
+    fn settle(&mut self) {
+        if self.out.is_empty() {
+            return;
+        }
+        if self.shared.live || self.out.len() >= CHUNK || self.flushed.elapsed() >= WAIT {
+            self.flush();
+        }
+    }
+
+    fn flush(&mut self) {
+        if self.out.is_empty() {
+            return;
+        }
+        let written = io::stdout().lock().write_all(&self.out);
+        self.out.clear();
+        self.flushed = Instant::now();
+        if written.is_err() {
+            self.shared.budget.stop();
+        }
+    }
+}
+
+impl Drop for Worker<'_> {
+    fn drop(&mut self) {
+        self.flush();
+        if !self.seen.is_empty()
+            && let Ok(mut seen) = self.shared.seen.lock()
+        {
+            spell::merge(&mut seen, &mut self.seen);
+        }
+        if !self.blocks.is_empty()
+            && let Ok(mut blocks) = self.shared.blocks.lock()
+        {
+            blocks.append(&mut self.blocks);
+        }
+        if let Ok(mut tally) = self.shared.tally.lock() {
+            tally.add(self.tally);
+        }
+    }
+}
+
+fn display(path: &Path) -> &[u8] {
+    let bytes = path.as_os_str().as_bytes();
+    bytes.strip_prefix(b"./").unwrap_or(bytes)
+}
+
+fn ends_with(name: &[u8], extension: &str) -> bool {
+    let extension = extension.as_bytes();
+    name.len() >= extension.len()
+        && name[name.len() - extension.len()..].eq_ignore_ascii_case(extension)
+}
+
+fn view(query: &Query) -> View {
+    let output = &query.output;
+    let terminal = io::stdout().is_terminal();
+    let machine = output.json || output.null || output.acts();
+    let pretty = !machine
+        && match output.format {
+            Format::Auto => terminal,
+            Format::Pretty => true,
+            Format::Plain => false,
+        };
+    let paths = output.list || output.best || output.why || output.null || output.acts();
+    let layout = if paths {
+        Layout::List
+    } else if output.count {
+        Layout::Count
+    } else if pretty {
+        Layout::Grouped
+    } else {
+        Layout::Flat
+    };
+    let color = pretty && std::env::var_os("NO_COLOR").is_none();
+    View {
+        layout,
+        color,
+        live: terminal,
+        json: output.json && !output.acts(),
+        end: if output.null { 0 } else { b'\n' },
+        links: color
+            && terminal
+            && !output.no_links
+            && std::env::var_os("SSH_CONNECTION").is_none(),
+    }
+}
+
+fn excludes(query: &Query) -> Result<Override, String> {
+    let root = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let mut builder = OverrideBuilder::new(root);
+    for exclude in &query.filters.excludes {
+        let mut globs = vec![format!("!{exclude}")];
+        if exclude.starts_with('.') && !exclude.contains(['/', '*', '?', '[']) {
+            globs.push(format!("!*{exclude}"));
+        }
+        for glob in globs {
+            builder
+                .add(&glob)
+                .map_err(|error| format!("-E {exclude} is not a usable pattern: {error}"))?;
+        }
+    }
+    builder.build().map_err(|error| error.to_string())
+}
+
+fn walker(query: &Query) -> WalkBuilder {
+    let hidden = query.walk.hidden || query.walk.all;
+    let ignored = query.walk.no_ignore || query.walk.all;
+    let mut builder = WalkBuilder::new(&query.roots[0]);
+    for root in &query.roots[1..] {
+        builder.add(root);
+    }
+    builder
+        .hidden(!hidden)
+        .ignore(!ignored)
+        .git_ignore(!ignored)
+        .git_global(!ignored)
+        .git_exclude(!ignored)
+        .parents(!ignored)
+        .follow_links(query.walk.follow)
+        .max_depth(query.walk.depth)
+        .threads(query.walk.threads);
+    if hidden && !query.walk.all {
+        builder.filter_entry(|entry| entry.file_name() != ".git");
+    }
+    if !query.filters.excludes.is_empty()
+        && let Ok(excluded) = excludes(query)
+    {
+        builder.overrides(excluded);
+    }
+    builder
+}
+
+fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> Outcome {
+    let now = SystemTime::now();
+    let cutoffs = query
+        .filters
+        .ages
+        .iter()
+        .map(|age| {
+            let cutoff = now
+                .checked_sub(Duration::from_secs(age.seconds))
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            (age.older, cutoff)
+        })
+        .collect();
+    let gather = matches!(pass, Pass::Gather { .. });
+    let shared = Shared {
+        plan,
+        folders: matches!(query.filters.kind, None | Some(Kind::Dir))
+            && !query.filters.files_only(),
+        stat: !query.filters.sizes.is_empty() || !query.filters.ages.is_empty(),
+        cutoffs,
+        layout: if gather { Layout::Flat } else { view.layout },
+        color: view.color,
+        json: view.json,
+        end: view.end,
+        base: view.links.then(rank::here),
+        live: view.live,
+        context: if matches!(view.layout, Layout::List | Layout::Count) || gather {
+            0
+        } else {
+            query.output.context
+        },
+        budget: Budget::new(if gather || keep {
+            None
+        } else {
+            query.output.max
+        }),
+        found: AtomicBool::new(false),
+        failed: AtomicBool::new(false),
+        quiet: pass != Pass::First,
+        gather,
+        fold: matches!(pass, Pass::Gather { fold: true }),
+        seen: Mutex::new(Seen::new()),
+        keep: keep && !gather,
+        blocks: Mutex::new(Vec::new()),
+        tally: Mutex::new(Tally::default()),
+        filters: query.filters.clone(),
+    };
+
+    let mut builder = walker(query);
+    if query.walk.sort && !gather {
+        builder.sort_by_file_name(|left, right| left.cmp(right));
+        let mut worker = Worker::new(&shared);
+        for result in builder.build() {
+            if matches!(worker.visit(result), WalkState::Quit) {
+                break;
+            }
+        }
+    } else {
+        builder.build_parallel().run(|| {
+            let mut worker = Worker::new(&shared);
+            Box::new(move |result| worker.visit(result))
+        });
+    }
+
+    Outcome {
+        found: shared.found.load(Ordering::Relaxed),
+        failed: shared.failed.load(Ordering::Relaxed),
+        seen: shared.seen.into_inner().unwrap_or_default(),
+        blocks: shared.blocks.into_inner().unwrap_or_default(),
+        tally: shared.tally.into_inner().unwrap_or_default(),
+    }
+}
+
+pub fn ranked(query: &Query, terminal: bool) -> bool {
+    let names_only = match &query.plan {
+        Plan::Union {
+            pattern: Some(_),
+            targets,
+        } => !targets.content,
+        Plan::Union { pattern: None, .. } => false,
+        Plan::Narrow { content, .. } => content.is_none(),
+    };
+    if query.output.best || query.output.why || query.output.open {
+        true
+    } else if query.walk.sort {
+        false
+    } else if query.output.exec.is_some() {
+        query.output.rank == Some(true)
+    } else {
+        query.output.rank.unwrap_or(terminal && names_only)
+    }
+}
+
+fn remembered(query: &Query, habits: &Habits, found: &[Block], view: View) -> Vec<Block> {
+    let mut extra = Vec::new();
+    let Plan::Union {
+        pattern: Some(source),
+        targets,
+    } = &query.plan
+    else {
+        return extra;
+    };
+    if query.filters.files_only() {
+        return extra;
+    }
+    let Ok(pattern) = Pattern::compile(source, &query.matching) else {
+        return extra;
+    };
+    let base = view.links.then(rank::here);
+    let style = Style {
+        color: view.color,
+        json: view.json,
+        end: view.end,
+        base: base.as_deref(),
+    };
+    let excluded = excludes(query).ok().filter(|excluded| !excluded.is_empty());
+    let roots: Vec<Vec<u8>> = query
+        .roots
+        .iter()
+        .map(|root| habits.absolute(root.as_os_str().as_bytes()))
+        .collect();
+    let mut have: HashSet<Vec<u8>> = found
+        .iter()
+        .map(|block| habits.absolute(&block.path))
+        .collect();
+    for path in habits.known() {
+        let below = roots.iter().find_map(|root| {
+            let rest = path.strip_prefix(root.as_slice())?;
+            let rest = if root.len() > 1 {
+                rest.strip_prefix(b"/")?
+            } else {
+                rest
+            };
+            (!rest.is_empty()).then_some(rest)
+        });
+        let Some(below) = below else {
+            continue;
+        };
+        let depth = below.split(|byte| *byte == b'/').count();
+        if query.walk.depth.is_some_and(|deepest| depth > deepest) || have.contains(path) {
+            continue;
+        }
+        let name = below.rsplit(|byte| *byte == b'/').next().unwrap_or(below);
+        let Some(hit) = pattern.find(name) else {
+            continue;
+        };
+        let Ok(metadata) = fs::metadata(OsStr::from_bytes(path)) else {
+            continue;
+        };
+        let folder = metadata.is_dir();
+        let wanted = match query.filters.kind {
+            None => folder || metadata.is_file(),
+            Some(Kind::Dir) => folder,
+            Some(Kind::File) => metadata.is_file(),
+            Some(Kind::Link) => false,
+        };
+        if !wanted || !(if folder { targets.dirs } else { targets.files }) {
+            continue;
+        }
+        let shown = habits.relative(path);
+        if let Some(excluded) = &excluded
+            && Path::new(OsStr::from_bytes(shown))
+                .ancestors()
+                .filter(|part| !part.as_os_str().is_empty())
+                .enumerate()
+                .any(|(above, part)| excluded.matched(part, above > 0 || folder).is_ignore())
+        {
+            continue;
+        }
+        let mut text = Vec::new();
+        let entry = Entry {
+            path: shown,
+            name_at: shown.len().saturating_sub(name.len()),
+            hit: Some(hit),
+            folder,
+        };
+        write_entry(&mut text, &entry, style);
+        have.insert(path.to_vec());
+        extra.push(Block {
+            path: shown.to_vec(),
+            quality: rank::quality(name, Some(hit)),
+            depth,
+            modified: metadata.modified().ok(),
+            line: None,
+            text,
+        });
+    }
+    extra
+}
+
+fn arrange(blocks: Vec<Block>, habits: Option<&Habits>, query: &Query) -> Vec<(Score, Block)> {
+    let mut blocks = match habits {
+        Some(habits) => habits.order(blocks),
+        None => {
+            let mut blocks: Vec<(Score, Block)> = blocks
+                .into_iter()
+                .map(|block| (Score::default(), block))
+                .collect();
+            blocks.sort_by(|left, right| left.1.path.cmp(&right.1.path));
+            blocks
+        }
+    };
+    let single = query.output.best || query.output.open;
+    if let Some(keep) = single.then_some(1).or(query.output.max) {
+        blocks.truncate(keep);
+    }
+    if single
+        && !query.output.why
+        && let (Some(habits), Some((_, top))) = (habits, blocks.first())
+    {
+        habits.remember(&top.path);
+    }
+    blocks
+}
+
+fn show(mut blocks: Vec<(Score, Block)>, query: &Query, view: View) {
+    let why = query.output.why;
+    if view.live {
+        blocks.reverse();
+    }
+    let mut stdout = io::stdout().lock();
+    let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK);
+    if why && !blocks.is_empty() {
+        chunk.extend_from_slice(rank::Score::heading().as_bytes());
+    }
+    for (score, block) in &blocks {
+        if why {
+            chunk.extend_from_slice(score.row().as_bytes());
+        }
+        chunk.extend_from_slice(&block.text);
+        if chunk.len() >= CHUNK {
+            if stdout.write_all(&chunk).is_err() {
+                return;
+            }
+            chunk.clear();
+        }
+    }
+    let _ = stdout.write_all(&chunk);
+}
+
+fn grouped(number: u64) -> String {
+    let digits = number.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(digit);
+    }
+    out
+}
+
+fn counted(number: u64, one: &str, many: &str) -> String {
+    format!(
+        "{} {}",
+        grouped(number),
+        if number == 1 { one } else { many }
+    )
+}
+
+fn totals(tally: Tally, layout: Layout, elapsed: Duration) -> String {
+    let mut matched: Vec<String> = Vec::new();
+    if layout != Layout::List && tally.files > 0 {
+        matched.push(format!(
+            "{} in {}",
+            counted(tally.lines, "line", "lines"),
+            counted(tally.files, "file", "files")
+        ));
+    } else if tally.files > 0 {
+        matched.push(counted(tally.files, "file", "files"));
+    }
+    if tally.names > 0 {
+        matched.push(counted(tally.names, "name", "names"));
+    }
+    if matched.is_empty() {
+        matched.push("nothing".to_string());
+    }
+    let time = match elapsed.as_millis() {
+        millis if millis < 1000 => format!("{millis} ms"),
+        _ => format!("{:.2} s", elapsed.as_secs_f64()),
+    };
+    format!(
+        "{} matched. Read {} of {} in {time}.",
+        matched.join(", "),
+        counted(tally.read, "file", "files"),
+        counted(tally.entries, "entry", "entries")
+    )
+}
+
+fn several(query: &Query) -> Option<&Terms> {
+    let terms: Vec<&Option<Terms>> = match &query.plan {
+        Plan::Union { pattern, .. } => vec![pattern],
+        Plan::Narrow { dir, name, content } => vec![dir, name, content],
+    };
+    terms.into_iter().flatten().find(|terms| terms.len() > 1)
+}
+
+pub fn retryable(query: &Query) -> Option<(&str, Targets)> {
+    match &query.plan {
+        Plan::Union {
+            pattern: Some(terms),
+            targets,
+        } => match terms.as_slice() {
+            [source] if !query.output.exact && spell::correctable(source) => {
+                Some((source, *targets))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+pub fn suggest(query: &Query) -> Option<String> {
+    let (source, targets) = retryable(query)?;
+    let matching = Matching {
+        case: query.matching.case,
+        literal: false,
+        word: query.matching.word,
+    };
+    let pattern = Pattern::one(&spell::variants(source), &matching).ok()?;
+    let fold = Pattern::one(source, &matching).ok()?.any_case(&matching);
+    let plan = Compiled::Union {
+        pattern: Some(pattern),
+        targets,
+    };
+    let seen = search(query, plan, view(query), Pass::Gather { fold }, false).seen;
+    spell::best(seen, source)
+}
+
+fn retry(query: &Query, view: View, keep: bool) -> Option<Outcome> {
+    let (source, targets) = retryable(query)?;
+    if !io::stderr().is_terminal() {
+        return None;
+    }
+    let close = suggest(query)?;
+    if !io::stdout().is_terminal() {
+        eprintln!("syk: nothing matches {source:?}. Did you mean {close:?}?");
+        return None;
+    }
+    let matching = Matching {
+        case: query.matching.case,
+        literal: true,
+        word: query.matching.word,
+    };
+    let pattern = Pattern::one(&close, &matching).ok()?;
+    eprintln!("syk: nothing matches {source:?}. Showing results for {close:?} instead.");
+    let plan = Compiled::Union {
+        pattern: Some(pattern),
+        targets,
+    };
+    Some(search(query, plan, view, Pass::Again, keep))
+}
+
+pub fn run(query: Query) -> ExitCode {
+    let started = Instant::now();
+    let plan = match compile(&query) {
+        Ok(plan) => plan,
+        Err(error) => {
+            eprintln!("syk: {error}");
+            return ExitCode::from(2);
+        }
+    };
+    if let Err(error) = excludes(&query) {
+        eprintln!("syk: {error}");
+        return ExitCode::from(2);
+    }
+    let view = view(&query);
+    let rank = ranked(&query, view.live);
+    let keep = rank || query.output.acts();
+    let habits = rank.then(|| std::thread::spawn(Habits::load));
+    let mut first = search(&query, plan, view, Pass::First, keep);
+    let failed = first.failed;
+    let habits = habits.and_then(|loading| loading.join().ok());
+    if let Some(habits) = &habits {
+        let extra = remembered(&query, habits, &first.blocks, view);
+        first.found |= !extra.is_empty();
+        first.blocks.extend(extra);
+    }
+    let last = match first.found {
+        true => first,
+        false => retry(&query, view, keep).unwrap_or(first),
+    };
+    let found = last.found;
+    let tally = last.tally;
+    let report = || {
+        if query.output.stats {
+            eprintln!("syk: {}", totals(tally, view.layout, started.elapsed()));
+        }
+    };
+    let mut ran = true;
+    if keep {
+        let blocks = arrange(last.blocks, habits.as_ref(), &query);
+        if query.output.open {
+            report();
+            if let Some((_, top)) = blocks.first() {
+                let (program, error) = act::open(&top.path, top.line);
+                eprintln!("syk: could not start {program}: {error}");
+                return ExitCode::from(2);
+            }
+        } else if let Some(command) = &query.output.exec {
+            let paths: Vec<&[u8]> = blocks
+                .iter()
+                .map(|(_, block)| block.path.as_slice())
+                .collect();
+            ran = paths.is_empty() || act::execute(command, &paths);
+            report();
+        } else {
+            show(blocks, &query, view);
+            report();
+        }
+    } else {
+        report();
+    }
+
+    if !found
+        && io::stderr().is_terminal()
+        && let Some(terms) = several(&query)
+    {
+        let words: Vec<String> = terms.iter().map(|term| format!("{term:?}")).collect();
+        eprintln!(
+            "syk: nothing has {} together. Every word has to be in the same name or on the same line. A word meant as a path has to exist, or end in a slash.",
+            words.join(" and ")
+        );
+    }
+    if let Some(expanded) = &query.expanded
+        && (expanded.files > 1 || !found)
+        && io::stderr().is_terminal()
+    {
+        let extension = &expanded.extension;
+        let searched = match expanded.files {
+            1 => format!("only the one {extension} file in this folder was searched"),
+            files => format!("only the {files} {extension} files in this folder were searched"),
+        };
+        eprintln!(
+            "syk: {searched}. If you typed *{extension}, the shell replaced it with file names before syk ran. To search every {extension} file below this folder, write {extension} or '*{extension}'."
+        );
+    }
+    if found && ran {
+        ExitCode::SUCCESS
+    } else if found {
+        ExitCode::from(1)
+    } else if failed {
+        ExitCode::from(2)
+    } else {
+        ExitCode::from(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::parse::{self, Outcome as Parsed};
+
+    struct Tree {
+        root: PathBuf,
+    }
+
+    impl Tree {
+        fn new(label: &str) -> Tree {
+            let root =
+                std::env::temp_dir().join(format!("syk-spell-{}-{label}", std::process::id()));
+            for (path, text) in [
+                ("src/config.ts", "export const config = loadConfig()\n"),
+                ("src/notes.md", "confine the configuration\n"),
+                ("settings/handler.rs", "fn handler() {}\n"),
+            ] {
+                let path = root.join(path);
+                fs::create_dir_all(path.parent().expect("a parent folder")).expect("create");
+                fs::write(path, text).expect("write");
+            }
+            Tree { root }
+        }
+
+        fn close(&self, args: &[&str]) -> Option<String> {
+            let mut args: Vec<OsString> = args.iter().map(OsString::from).collect();
+            args.push(format!("{}/", self.root.display()).into());
+            match parse::parse(args) {
+                Ok(Parsed::Run(query)) => suggest(&query),
+                _ => panic!("expected a search"),
+            }
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn a_missing_letter_is_found_in_names_and_contents() {
+        let tree = Tree::new("missing");
+        assert_eq!(tree.close(&["confg"]).as_deref(), Some("config"));
+        assert_eq!(tree.close(&["-n", "handlr"]).as_deref(), Some("handler"));
+        assert_eq!(tree.close(&["-d", "setings"]).as_deref(), Some("settings"));
+    }
+
+    #[test]
+    fn extra_swapped_and_wrong_letters_are_found() {
+        let tree = Tree::new("other");
+        assert_eq!(tree.close(&["-c", "handlerr"]).as_deref(), Some("handler"));
+        assert_eq!(tree.close(&["-c", "hadnler"]).as_deref(), Some("handler"));
+        assert_eq!(tree.close(&["-c", "hendler"]).as_deref(), Some("handler"));
+    }
+
+    #[test]
+    fn case_and_targets_are_respected() {
+        let tree = Tree::new("case");
+        assert_eq!(tree.close(&["Confg"]).as_deref(), Some("Config"));
+        assert_eq!(tree.close(&["-d", "handlr"]), None);
+        assert_eq!(tree.close(&["confg", ".rs"]), None);
+    }
+
+    #[test]
+    fn nothing_close_or_switched_off_gives_no_suggestion() {
+        let tree = Tree::new("none");
+        assert_eq!(tree.close(&["zzzzqq"]), None);
+        assert_eq!(tree.close(&["confg", "-X"]), None);
+        assert_eq!(tree.close(&["conf.g"]), None);
+    }
+}

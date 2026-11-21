@@ -1,7 +1,15 @@
 [package]
-name = "syk"
+name = "syk-search"
 version = "0.1.0"
 edition = "2024"
+description = "Search folder names, file names and file contents in one pass."
+license = "MIT"
+keywords = ["search", "grep", "find", "regex", "cli"]
+categories = ["command-line-utilities", "filesystem"]
+
+[[bin]]
+name = "syk"
+path = "src/main.rs"
 
 [dependencies]
 grep-matcher = "0.1.9"

@@ -17,9 +17,11 @@ use ignore::{DirEntry, WalkBuilder, WalkState};
 use crate::act;
 use crate::output::{Budget, Entry, Layout, Lines, Style, write_count, write_entry};
 use crate::pattern::Pattern;
+use crate::pick;
 use crate::query::{Filters, Format, Kind, Matching, Plan, Query, Targets, Terms};
 use crate::rank::{self, Block, Habits, Score};
 use crate::spell::{self, Gather, Seen};
+use crate::stop;
 
 const CHUNK: usize = 64 * 1024;
 const WAIT: Duration = Duration::from_millis(10);
@@ -504,6 +506,10 @@ impl<'a> Worker<'a> {
         if self.out.is_empty() {
             return;
         }
+        if stop::asked() {
+            self.out.clear();
+            return;
+        }
         let written = io::stdout().lock().write_all(&self.out);
         self.out.clear();
         self.flushed = Instant::now();
@@ -546,7 +552,7 @@ fn ends_with(name: &[u8], extension: &str) -> bool {
 fn view(query: &Query) -> View {
     let output = &query.output;
     let terminal = io::stdout().is_terminal();
-    let machine = output.json || output.null || output.acts();
+    let machine = output.json || output.null || output.acts() || output.browse;
     let pretty = !machine
         && match output.format {
             Format::Auto => terminal,
@@ -554,7 +560,9 @@ fn view(query: &Query) -> View {
             Format::Plain => false,
         };
     let paths = output.list || output.best || output.why || output.null || output.acts();
-    let layout = if paths {
+    let layout = if output.browse && !output.list {
+        Layout::Flat
+    } else if paths {
         Layout::List
     } else if output.count {
         Layout::Count
@@ -568,7 +576,7 @@ fn view(query: &Query) -> View {
         layout,
         color,
         live: terminal,
-        json: output.json && !output.acts(),
+        json: output.json && !output.acts() && !output.browse,
         end: if output.null { 0 } else { b'\n' },
         links: color
             && terminal
@@ -648,7 +656,10 @@ fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> 
         end: view.end,
         base: view.links.then(rank::here),
         live: view.live,
-        context: if matches!(view.layout, Layout::List | Layout::Count) || gather {
+        context: if matches!(view.layout, Layout::List | Layout::Count)
+            || gather
+            || query.output.browse
+        {
             0
         } else {
             query.output.context
@@ -704,7 +715,7 @@ pub fn ranked(query: &Query, terminal: bool) -> bool {
         Plan::Union { pattern: None, .. } => false,
         Plan::Narrow { content, .. } => content.is_none(),
     };
-    if query.output.best || query.output.why || query.output.open {
+    if query.output.best || query.output.why || query.output.open || query.output.browse {
         true
     } else if query.walk.sort {
         false
@@ -824,7 +835,7 @@ fn arrange(blocks: Vec<Block>, habits: Option<&Habits>, query: &Query) -> Vec<(S
             blocks
         }
     };
-    let single = query.output.best || query.output.open;
+    let single = (query.output.best || query.output.open) && !query.output.browse;
     if let Some(keep) = single.then_some(1).or(query.output.max) {
         blocks.truncate(keep);
     }
@@ -977,6 +988,7 @@ fn retry(query: &Query, view: View, keep: bool) -> Option<Outcome> {
 
 pub fn run(query: Query) -> ExitCode {
     let started = Instant::now();
+    stop::watch();
     let plan = match compile(&query) {
         Ok(plan) => plan,
         Err(error) => {
@@ -990,7 +1002,7 @@ pub fn run(query: Query) -> ExitCode {
     }
     let view = view(&query);
     let rank = ranked(&query, view.live);
-    let keep = rank || query.output.acts();
+    let keep = rank || query.output.acts() || query.output.browse;
     let habits = rank.then(|| std::thread::spawn(Habits::load));
     let mut first = search(&query, plan, view, Pass::First, keep);
     let failed = first.failed;
@@ -1000,10 +1012,13 @@ pub fn run(query: Query) -> ExitCode {
         first.found |= !extra.is_empty();
         first.blocks.extend(extra);
     }
-    let last = match first.found {
+    let last = match first.found || stop::asked() {
         true => first,
         false => retry(&query, view, keep).unwrap_or(first),
     };
+    if stop::asked() && io::stderr().is_terminal() {
+        eprint!("\r\x1b[K");
+    }
     let found = last.found;
     let tally = last.tally;
     let report = || {
@@ -1012,9 +1027,40 @@ pub fn run(query: Query) -> ExitCode {
         }
     };
     let mut ran = true;
-    if keep {
+    let chosen = query.output.acts() || query.output.best || query.output.browse;
+    if keep && stop::asked() && chosen {
+        report();
+    } else if keep {
         let blocks = arrange(last.blocks, habits.as_ref(), &query);
-        if query.output.open {
+        if query.output.browse && !blocks.is_empty() {
+            report();
+            let styled = std::env::var_os("NO_COLOR").is_none();
+            let items = pick::items(blocks.iter().map(|(_, block)| block), styled);
+            let item = match pick::choose(&items, styled) {
+                Ok(Some(index)) => &items[index],
+                Ok(None) => return ExitCode::from(1),
+                Err(error) => {
+                    eprintln!("syk: -b, --browse needs a terminal to show the list: {error}");
+                    return ExitCode::from(2);
+                }
+            };
+            if let Some(habits) = &habits {
+                habits.remember(&item.path);
+            }
+            if query.output.open {
+                let (program, error) = act::open(&item.path, item.line);
+                eprintln!("syk: could not start {program}: {error}");
+                return ExitCode::from(2);
+            }
+            match &query.output.exec {
+                Some(command) => ran = act::execute(command, &[item.path.as_slice()]),
+                None => {
+                    let mut line = item.path.clone();
+                    line.push(view.end);
+                    let _ = io::stdout().lock().write_all(&line);
+                }
+            }
+        } else if query.output.open {
             report();
             if let Some((_, top)) = blocks.first() {
                 let (program, error) = act::open(&top.path, top.line);
@@ -1036,6 +1082,10 @@ pub fn run(query: Query) -> ExitCode {
         report();
     }
 
+    if stop::asked() {
+        eprintln!("syk: stopped before the search finished.");
+        return ExitCode::from(130);
+    }
     if !found
         && io::stderr().is_terminal()
         && let Some(terms) = several(&query)

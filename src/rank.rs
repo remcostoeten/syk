@@ -262,7 +262,7 @@ pub fn report() -> String {
     let mut text = String::new();
     if picks.is_empty() {
         text.push_str(
-            "Nothing is remembered yet. A path chosen with -1 or -O is remembered from then on.\n",
+            "Nothing is remembered yet. A path chosen with -1, -b or -O is remembered from then on.\n",
         );
     } else {
         text.push_str(&format!(

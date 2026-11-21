@@ -1,8 +1,11 @@
-use std::fs;
-use std::io::Write;
+use std::fs::{self, File};
+use std::io::{Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
@@ -853,4 +856,207 @@ fn setup_prints_instructions_for_an_agent() {
         assert!(brief.contains(expected), "{expected} is missing");
     }
     assert_eq!(home.setup("tcsh", "").1, 2);
+}
+
+const PATIENCE: Duration = Duration::from_secs(10);
+
+struct Terminal {
+    screen: File,
+    child: Child,
+    seen: String,
+    read: usize,
+}
+
+impl Terminal {
+    fn open(fixture: &Fixture, args: &[&str], piped: bool) -> Terminal {
+        let size = libc::winsize {
+            ws_row: 24,
+            ws_col: 100,
+            ws_xpixel: 0,
+            ws_ypixel: 0,
+        };
+        let (mut screen, mut inside) = (0, 0);
+        let opened = unsafe {
+            libc::openpty(
+                &mut screen,
+                &mut inside,
+                std::ptr::null_mut(),
+                std::ptr::null(),
+                &size,
+            )
+        };
+        assert_eq!(opened, 0, "no pseudo-terminal");
+        let inside = unsafe { File::from_raw_fd(inside) };
+        let mut command = fixture.command(args);
+        command
+            .env("TERM", "xterm-256color")
+            .env_remove("SYK_PAGER")
+            .stdin(inside.try_clone().expect("copy the terminal"))
+            .stderr(inside.try_clone().expect("copy the terminal"));
+        match piped {
+            true => command.stdout(Stdio::piped()),
+            false => command.stdout(inside.try_clone().expect("copy the terminal")),
+        };
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() < 0 || libc::ioctl(0, libc::TIOCSCTTY as _, 0) < 0 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let child = command.spawn().expect("start syk");
+        Terminal {
+            screen: unsafe { File::from_raw_fd(screen) },
+            child,
+            seen: String::new(),
+            read: 0,
+        }
+    }
+
+    fn wait_for(&mut self, text: &str) {
+        let started = Instant::now();
+        loop {
+            if let Some(at) = self.seen[self.read..].find(text) {
+                self.read += at + text.len();
+                return;
+            }
+            assert!(
+                started.elapsed() < PATIENCE,
+                "{text:?} never showed up after {:?}",
+                self.seen[self.read..]
+                    .chars()
+                    .rev()
+                    .take(300)
+                    .collect::<String>()
+                    .chars()
+                    .rev()
+                    .collect::<String>()
+            );
+            let mut ready = libc::pollfd {
+                fd: self.screen.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            if unsafe { libc::poll(&mut ready, 1, 100) } <= 0 {
+                continue;
+            }
+            let mut chunk = [0u8; 8192];
+            let read = self.screen.read(&mut chunk).unwrap_or(0);
+            self.seen.push_str(&String::from_utf8_lossy(&chunk[..read]));
+        }
+    }
+
+    fn press(&mut self, keys: &str, then: &str) {
+        self.screen.write_all(keys.as_bytes()).expect("send keys");
+        self.wait_for(then);
+    }
+
+    fn finish(mut self, keys: &str) -> (String, i32) {
+        self.screen.write_all(keys.as_bytes()).expect("send keys");
+        let mut printed = String::new();
+        if let Some(mut stdout) = self.child.stdout.take() {
+            stdout
+                .read_to_string(&mut printed)
+                .expect("read the output");
+        }
+        let status = self.child.wait().expect("wait for syk");
+        (printed, status.code().unwrap_or(-1))
+    }
+}
+
+#[test]
+fn long_help_is_paged_and_answers_to_its_keys() {
+    let fixture = Fixture::new();
+    let mut terminal = Terminal::open(&fixture, &["-h"], false);
+    terminal.wait_for("1/");
+    terminal.wait_for("n next: ARGUMENTS");
+    terminal.press("n", "b back: top");
+    terminal.press("/", "type what to find");
+    terminal.press("pattern", "/pattern");
+    terminal.wait_for(" lines");
+    terminal.press("\r", "n next match");
+    terminal.press("n", "3/13");
+    terminal.press("\x1b", "/ search");
+    terminal.press("s", "SECTIONS");
+    terminal.press("d", "PATTERNS");
+    terminal.press("?", "KEYS");
+    terminal.press("x", "/ search");
+    terminal.press("-", "the letter of a flag");
+    terminal.press("y", "There is no flag -y.");
+    terminal.press("-", "the letter of a flag");
+    terminal.press("S", "Esc close");
+    assert!(
+        terminal
+            .seen
+            .contains("Only files of at least, or at most, this size.")
+    );
+    terminal.press("\x1b", "s sections");
+    let (_, status) = terminal.finish("q");
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn help_that_fits_or_is_switched_off_is_printed_in_one_piece() {
+    let fixture = Fixture::new();
+    for args in [&["-h", "-G"][..], &["-V", "-h"][..]] {
+        let mut terminal = Terminal::open(&fixture, args, false);
+        terminal.wait_for("MORE HELP");
+        let seen = terminal.seen.clone();
+        let (_, status) = terminal.finish("");
+        assert_eq!(status, 0);
+        assert!(!seen.contains("\x1b[?1049h"), "{args:?} was paged");
+    }
+    let mut terminal = Terminal::open(&fixture, &["-h", "-G", "-B"], false);
+    terminal.wait_for("USAGE");
+    assert!(terminal.seen.contains("  syk "));
+    assert!(!terminal.seen.contains("|__/"));
+}
+
+#[test]
+fn a_result_is_chosen_from_the_list() {
+    let fixture = Fixture::new();
+    let mut terminal = Terminal::open(&fixture, &["-c", "needle", "-b"], true);
+    terminal.wait_for("Enter choose");
+    terminal.press("/", "Esc clear");
+    terminal.press("api/route", "1 of ");
+    terminal.press("\r", "1/1");
+    let (printed, status) = terminal.finish("\r");
+    assert_eq!(printed, "src/api/route.ts\n");
+    assert_eq!(status, 0);
+    assert!(fixture.run(&["-k"]).0.contains("src/api/route.ts"));
+
+    let mut terminal = Terminal::open(&fixture, &["-n", "route", "-b"], true);
+    terminal.wait_for("Enter choose");
+    terminal.press("j", "2/2");
+    let (printed, status) = terminal.finish("q");
+    assert_eq!((printed.as_str(), status), ("", 1));
+
+    let (printed, status) = fixture.run(&["-n", "zzzz", "-b", "-X"]);
+    assert_eq!((printed.as_str(), status), ("", 1));
+}
+
+#[test]
+fn an_interrupted_search_stops_with_status_130() {
+    let fixture = Fixture::new();
+    let mut child = fixture
+        .command(&["-c", "e", "-a", "/usr"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start syk");
+    let mut stdout = child.stdout.take().expect("a pipe");
+    let mut first = [0u8; 1];
+    stdout.read_exact(&mut first).expect("some output");
+    assert_eq!(unsafe { libc::kill(child.id() as i32, libc::SIGINT) }, 0);
+    let mut rest = Vec::new();
+    stdout.read_to_end(&mut rest).expect("the rest");
+    let output = child.wait_with_output().expect("wait for syk");
+    assert_eq!(output.status.code(), Some(130));
+    let errors = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        errors.contains("stopped before the search finished"),
+        "{errors}"
+    );
+    assert!(rest.is_empty() || rest.ends_with(b"\n"));
 }

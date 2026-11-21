@@ -178,7 +178,16 @@ pub fn render(query: &Query) -> Result<String, String> {
     row(&mut out, "skips", &skipped.join(", "));
 
     let mut output: Vec<String> = Vec::new();
-    if let Some(command) = &query.output.exec {
+    if query.output.browse {
+        let then = match (&query.output.exec, query.output.open) {
+            (Some(command), _) => format!("runs {command:?} on it"),
+            (None, true) => "opens it in $VISUAL or $EDITOR".to_string(),
+            (None, false) => "prints its path".to_string(),
+        };
+        output.push(format!(
+            "shows a list to choose one result from, then {then}"
+        ));
+    } else if let Some(command) = &query.output.exec {
         let how = if command.contains("{}") {
             "once per result"
         } else {

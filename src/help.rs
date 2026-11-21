@@ -1,13 +1,16 @@
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 
 use crate::banner::{self, Look, TAGLINE};
 use crate::filter;
 use crate::flags::{self, Arity, FLAGS, Flag, Group, Id};
+use crate::pager::{self, Mark, Setup, Sheet};
 
-const WIDTH: usize = 80;
 const MARGIN: &str = "  ";
 const INDENT: &str = "    ";
 const GAP: usize = 3;
+const ROOM: usize = 24;
+const NARROWEST: usize = 40;
+const QUOTED: usize = 3;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -17,21 +20,32 @@ const PATH: &str = "\x1b[1;34m";
 const FILTER: &str = "\x1b[33m";
 const FLAG: &str = "\x1b[36m";
 const NONE: &str = "";
+const RULE: &str = "─";
 
-const SHAPES: [(&str, &str); 6] = [
-    ("foo", "the pattern to search for"),
-    ("src/", "a path that exists: where to search, default here"),
-    (".ts  '*.ts'", "only files with this extension"),
+const SHAPES: [(&str, &str, &str); 8] = [
+    ("foo", "pattern", "the text to search for"),
     (
-        "+10kb  -1mb",
-        "only files of at least 10 KB, of at most 1 MB",
+        "src/",
+        "path",
+        "where to search, when it exists on disk. Default: here",
     ),
     (
-        "+7d  -2h",
-        "only files modified over 7 days ago, in the last 2 hours",
+        ".ts",
+        "extension",
+        "only files ending in .ts. '*.ts' means the same",
     ),
-    ("--", "what follows is literal: the pattern, then paths"),
+    ("+10kb", "size", "only files of 10 KB or more"),
+    ("-1mb", "size", "only files of 1 MB or less"),
+    ("+7d", "age", "only files modified more than 7 days ago"),
+    ("-2h", "age", "only files modified in the last 2 hours"),
+    (
+        "--",
+        "separator",
+        "what follows is literal: the pattern, then paths",
+    ),
 ];
+
+const SHAPES_LEAD: &str = "Words that are not flags are recognised by their shape.";
 
 const SHAPES_NOTE: &str = "A word that could be a pattern and also exists on disk is read as the pattern when it is the only candidate. End it with a slash to make it a path: src/.";
 
@@ -90,21 +104,41 @@ const EXIT: [(&str, &str); 3] = [
     ("2", "an argument or a path was wrong"),
 ];
 
-const MORE: [(&str, &str); 4] = [
+const MORE: [(&str, &str); 6] = [
     ("syk -n -h", "the page for one flag"),
     ("syk --size --help", "the same, with the long names"),
     ("syk -h modified", "the same, by name"),
     ("syk foo -x", "show how the arguments are read"),
+    ("syk -h pipe", "the flags whose page mentions pipe"),
+    ("syk -h -h", "the paging keys, and how to turn paging off"),
 ];
+
+fn lead(group: Group) -> Option<&'static str> {
+    match group {
+        Group::Target => {
+            Some("Without these, the pattern is tried on all three and every hit is shown.")
+        }
+        Group::Filter => {
+            Some("-e, -S and -M also have the shorthand from ARGUMENTS: .ts, +10kb, -2h.")
+        }
+        Group::Walk => {
+            Some("Hidden, ignored and binary files are skipped unless you ask for them.")
+        }
+        Group::Output => Some(
+            "In a terminal, results are grouped and coloured. In a pipe they are plain, one per line.",
+        ),
+        Group::Ranking => Some(
+            "Ranked results end with the best one, next to your prompt. In a pipe the best one comes first. A search on names only is ranked by default in a terminal.",
+        ),
+        _ => None,
+    }
+}
 
 fn note(group: Group) -> Option<&'static str> {
     match group {
         Group::Target => Some(
-            "Without these, the pattern is tried on all three and every hit is shown. Two of them with their own pattern narrow each other: -n route -c auth prints the lines matching auth in files named *route*.",
+            "Two of them with their own pattern narrow each other: -n route -c auth prints the lines matching auth in files named *route*.",
         ),
-        Group::Walk => {
-            Some("Hidden, ignored and binary files are skipped unless you ask for them.")
-        }
         Group::Other => Some(
             "Flags you always want go in ~/.config/syk/config, written as you would type them. syk -U -h has the details.",
         ),
@@ -247,7 +281,7 @@ fn usage(out: &mut String, styled: bool) {
 }
 
 fn title(out: &mut String, look: Look) {
-    if look.banner {
+    if look.logo {
         out.push_str(&banner::header(TAGLINE, look));
         return;
     }
@@ -263,12 +297,12 @@ fn title(out: &mut String, look: Look) {
     out.push('\n');
 }
 
-fn wrap(out: &mut String, text: &str, start: usize, hang: usize) {
+fn wrap(out: &mut String, text: &str, start: usize, hang: usize, width: usize) {
     let mut column = start;
     let mut empty = true;
     for word in text.split_whitespace() {
         let length = word.chars().count();
-        if !empty && column + 1 + length > WIDTH {
+        if !empty && column + 1 + length > width {
             out.push('\n');
             out.push_str(&" ".repeat(hang));
             column = hang;
@@ -295,27 +329,60 @@ fn widest(flags: &[&Flag]) -> usize {
 
 struct Page {
     text: String,
+    marks: Vec<Mark>,
+    look: Look,
     styled: bool,
+    width: usize,
 }
 
 impl Page {
-    fn new(styled: bool) -> Page {
+    fn new(look: Look) -> Page {
         Page {
             text: String::with_capacity(8192),
-            styled,
+            marks: Vec::new(),
+            look,
+            styled: look.styled,
+            width: look.columns.max(NARROWEST),
         }
+    }
+
+    fn mark(&mut self, title: &str) {
+        self.marks.push(Mark {
+            line: self.text.matches('\n').count(),
+            title: title.to_string(),
+        });
     }
 
     fn heading(&mut self, title: &str) {
         self.text.push('\n');
+        self.mark(title);
         self.text.push_str(MARGIN);
         put(&mut self.text, BOLD, title, self.styled);
+        let used = 2 * MARGIN.len() + title.chars().count() + 1;
+        if self.look.banner && self.look.columns > used {
+            self.text.push(' ');
+            let rule = RULE.repeat(self.look.columns - used);
+            put(&mut self.text, DIM, &rule, self.styled);
+        }
         self.text.push('\n');
+    }
+
+    fn shapes(&mut self) {
+        let first = SHAPES.iter().map(|row| row.0.len()).max().unwrap_or(0);
+        let second = SHAPES.iter().map(|row| row.1.len()).max().unwrap_or(0);
+        for (shape, kind, meaning) in SHAPES {
+            let style = tone(shape);
+            self.text.push_str(INDENT);
+            put(&mut self.text, style, shape, self.styled);
+            self.text.push_str(&" ".repeat(first - shape.len() + GAP));
+            put(&mut self.text, style, kind, self.styled);
+            self.meaning(first + GAP + kind.len(), first + GAP + second, meaning);
+        }
     }
 
     fn paragraph(&mut self, text: &str) {
         self.text.push_str(INDENT);
-        wrap(&mut self.text, text, INDENT.len(), INDENT.len());
+        wrap(&mut self.text, text, INDENT.len(), INDENT.len(), self.width);
     }
 
     fn gap(&mut self) {
@@ -324,9 +391,16 @@ impl Page {
 
     fn meaning(&mut self, width: usize, column: usize, text: &str) {
         let start = INDENT.len() + column + GAP;
+        if start + ROOM > self.width {
+            let hang = 2 * INDENT.len();
+            self.text.push('\n');
+            self.text.push_str(&" ".repeat(hang));
+            wrap(&mut self.text, text, hang, hang, self.width);
+            return;
+        }
         self.text
             .push_str(&" ".repeat(start - INDENT.len() - width));
-        wrap(&mut self.text, text, start, start);
+        wrap(&mut self.text, text, start, start, self.width);
     }
 
     fn table(&mut self, rows: &[(&str, &str)], left: fn(&mut String, &str, bool)) {
@@ -351,16 +425,18 @@ impl Page {
     }
 }
 
-fn overview(look: Look) -> String {
+fn overview(look: Look) -> Page {
     let styled = look.styled;
-    let mut page = Page::new(styled);
+    let mut page = Page::new(look);
     title(&mut page.text, look);
 
     page.heading("USAGE");
     usage(&mut page.text, styled);
 
     page.heading("ARGUMENTS");
-    page.table(&SHAPES, paint);
+    page.paragraph(SHAPES_LEAD);
+    page.gap();
+    page.shapes();
     page.gap();
     page.paragraph(SHAPES_NOTE);
 
@@ -372,6 +448,10 @@ fn overview(look: Look) -> String {
     for group in Group::ALL {
         let members: Vec<&Flag> = FLAGS.iter().filter(|flag| flag.group == group).collect();
         page.heading(group.title());
+        if let Some(text) = lead(group) {
+            page.paragraph(text);
+            page.gap();
+        }
         page.flags(&members, column);
         if let Some(text) = note(group) {
             page.gap();
@@ -388,11 +468,12 @@ fn overview(look: Look) -> String {
     page.heading("MORE HELP");
     page.table(&MORE, paint);
     page.gap();
-    page.text
+    page
 }
 
 fn topic(page: &mut Page, flag: &Flag) {
     page.text.push('\n');
+    page.mark(&format!("--{}", flag.long));
     page.text.push_str(MARGIN);
     label(&mut page.text, flag, page.styled);
     page.text.push('\n');
@@ -428,11 +509,98 @@ fn about(topics: &[Id]) -> String {
     }
 }
 
-pub fn render(topics: &[Id], look: Look) -> String {
+fn mentions(flag: &Flag, term: &str) -> bool {
+    let within = |text: &str| text.to_lowercase().contains(term);
+    within(flag.long)
+        || within(flag.summary)
+        || within(flag.detail)
+        || flag.aliases.iter().any(|alias| within(alias))
+        || flag
+            .examples
+            .iter()
+            .any(|(command, meaning)| within(command) || within(meaning))
+}
+
+fn sentences<'a>(detail: &'a str, terms: &[String]) -> Vec<&'a str> {
+    detail
+        .split("\n\n")
+        .flat_map(|paragraph| paragraph.split_inclusive(". "))
+        .map(str::trim)
+        .filter(|sentence| {
+            let lower = sentence.to_lowercase();
+            terms.iter().any(|term| lower.contains(term))
+        })
+        .take(QUOTED)
+        .collect()
+}
+
+fn found(terms: &[String], look: Look) -> Page {
+    let shown = terms.join(" ");
+    let lower: Vec<String> = terms.iter().map(|term| term.to_lowercase()).collect();
+    let hits: Vec<&Flag> = FLAGS
+        .iter()
+        .filter(|flag| lower.iter().all(|term| mentions(flag, term)))
+        .collect();
+    let mut page = Page::new(look);
+    let about = format!("Flags whose page mentions {shown}.");
+    page.text.push_str(&banner::header(&about, look));
+    if hits.is_empty() {
+        page.gap();
+        page.text.push_str(MARGIN);
+        wrap(
+            &mut page.text,
+            &format!("No flag page mentions {shown}."),
+            MARGIN.len(),
+            MARGIN.len(),
+            page.width,
+        );
+    }
+    for flag in &hits {
+        page.text.push('\n');
+        page.mark(&format!("--{}", flag.long));
+        page.text.push_str(MARGIN);
+        label(&mut page.text, flag, page.styled);
+        page.text.push('\n');
+        page.paragraph(flag.summary);
+        let quoted = sentences(flag.detail, &lower);
+        if !quoted.is_empty() {
+            page.gap();
+            page.paragraph(&quoted.join(" "));
+        }
+        let rows: Vec<(&str, &str)> = flag
+            .examples
+            .iter()
+            .filter(|(command, meaning)| {
+                let text = format!("{command} {meaning}").to_lowercase();
+                lower.iter().any(|term| text.contains(term))
+            })
+            .copied()
+            .collect();
+        if !rows.is_empty() {
+            page.gap();
+            page.table(&rows, paint);
+        }
+    }
+    page.heading("MORE HELP");
+    let first = hits.first().map(|flag| format!("syk -{} -h", flag.short));
+    let mut rows: Vec<(&str, &str)> = Vec::with_capacity(2);
+    if let Some(command) = &first {
+        rows.push((command, "the full page of one flag"));
+    }
+    rows.push(("syk -h", "every flag"));
+    page.table(&rows, paint);
+    page.gap();
+    page
+}
+
+fn build(topics: &[Id], terms: &[String], look: Look) -> Page {
+    if topics.is_empty() && !terms.is_empty() {
+        return found(terms, look);
+    }
     if topics.is_empty() {
         return overview(look);
     }
-    let mut page = Page::new(look.styled);
+    let mut page = Page::new(look);
     page.text.push_str(&banner::header(&about(topics), look));
     for id in topics {
         topic(&mut page, flags::by_id(*id));
@@ -440,7 +608,12 @@ pub fn render(topics: &[Id], look: Look) -> String {
     page.heading("MORE HELP");
     page.table(&[("syk -h", "every flag")], paint);
     page.gap();
-    page.text
+    page
+}
+
+#[cfg(test)]
+pub fn render(topics: &[Id], look: Look) -> String {
+    build(topics, &[], look).text
 }
 
 const WELCOME: [(&str, &[(&str, &str)]); 4] = [
@@ -501,15 +674,12 @@ fn only_flag(command: &str) -> Option<&'static Flag> {
     flags::by_short(short.chars().next()?)
 }
 
-pub fn welcome(look: Look) -> String {
+fn greeting(look: Look) -> Page {
     let styled = look.styled;
-    let mut out = String::with_capacity(2048);
-    title(&mut out, look);
-    out.push('\n');
-    out.push_str(MARGIN);
-    put(&mut out, BOLD, "USAGE", styled);
-    out.push('\n');
-    usage(&mut out, styled);
+    let mut page = Page::new(look);
+    title(&mut page.text, look);
+    page.heading("USAGE");
+    usage(&mut page.text, styled);
 
     let column = WELCOME
         .iter()
@@ -518,53 +688,89 @@ pub fn welcome(look: Look) -> String {
         .max()
         .unwrap_or(0);
     for (heading, rows) in WELCOME {
-        out.push('\n');
-        out.push_str(MARGIN);
-        put(&mut out, BOLD, heading, styled);
-        out.push('\n');
+        page.heading(heading);
+        let out = &mut page.text;
         for (command, meaning) in rows {
             out.push_str(INDENT);
-            paint(&mut out, command, styled);
+            paint(out, command, styled);
             out.push_str(&" ".repeat(column - command.len() + GAP));
             out.push_str(meaning);
             if let Some(flag) = only_flag(command) {
                 out.push_str("  ");
-                put(&mut out, DIM, &format!("or --{}", flag.long), styled);
+                put(out, DIM, &format!("or --{}", flag.long), styled);
             }
             out.push('\n');
         }
     }
-    out.push('\n');
-    out
+    page.gap();
+    page
+}
+
+#[cfg(test)]
+pub fn welcome(look: Look) -> String {
+    greeting(look).text
+}
+
+fn sheet(page: Page) -> Sheet {
+    Sheet {
+        text: page.text,
+        marks: page.marks,
+    }
+}
+
+fn paged(page: Page, terminal: bool) -> Result<(), String> {
+    let look = page.look;
+    let first = sheet(page);
+    if !terminal {
+        return Err(first.text);
+    }
+    let open = |short: char| flags::by_short(short).map(|flag| sheet(build(&[flag.id], &[], look)));
+    let setup = Setup {
+        styled: look.styled,
+        open: Some(&open),
+    };
+    pager::offer(first, &setup).map_err(|sheet| sheet.text)
 }
 
 pub fn print_welcome() {
     let stderr = std::io::stderr();
     let look = Look::of(&stderr);
-    let _ = stderr.lock().write_all(welcome(look).as_bytes());
+    let terminal = look.banner && std::io::stdout().is_terminal();
+    if let Err(text) = paged(greeting(look), terminal) {
+        let _ = stderr.lock().write_all(text.as_bytes());
+    }
 }
 
-pub fn print(topics: &[Id]) {
+pub fn print(topics: &[Id], terms: &[String]) {
     let stdout = std::io::stdout();
     let look = Look::of(&stdout);
-    let _ = stdout.lock().write_all(render(topics, look).as_bytes());
+    if let Err(text) = paged(build(topics, terms, look), look.banner) {
+        let _ = stdout.lock().write_all(text.as_bytes());
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::banner::WIDTH;
 
     const PIPED: Look = Look {
         banner: false,
+        logo: false,
         styled: false,
+        columns: WIDTH,
     };
     const SHOWN: Look = Look {
         banner: true,
+        logo: true,
         styled: false,
+        columns: WIDTH,
     };
     const STYLED: Look = Look {
         banner: true,
+        logo: true,
         styled: true,
+        columns: WIDTH,
     };
 
     #[test]
@@ -585,6 +791,47 @@ mod tests {
         assert!(pages[2].contains("Help for --name."));
         assert!(pages[3].contains("Help for 2 flags."));
         assert!(!render(&[Id::Name], PIPED).contains("Help for"));
+    }
+
+    #[test]
+    fn a_terminal_gets_ruled_headings_and_marks_for_the_pager() {
+        let page = build(&[], &[], SHOWN);
+        let lines: Vec<&str> = page.text.lines().collect();
+        assert!(
+            page.text
+                .contains(&format!("  FILTERS {}\n", RULE.repeat(68)))
+        );
+        assert!(!render(&[], PIPED).contains(RULE));
+        assert_eq!(page.marks.len(), 14);
+        for mark in &page.marks {
+            assert!(lines[mark.line].starts_with(&format!("  {} ", mark.title)));
+            assert_eq!(lines[mark.line - 1], "");
+        }
+        let size = build(&[Id::Size], &[], SHOWN);
+        assert_eq!(size.marks[0].title, "--size");
+        assert!(size.text.lines().nth(size.marks[0].line) == Some("  -S, --size SIZE"));
+    }
+
+    #[test]
+    fn a_narrow_terminal_gets_narrow_pages() {
+        let narrow = Look {
+            banner: true,
+            logo: true,
+            styled: false,
+            columns: 48,
+        };
+        let mut pages = vec![welcome(narrow), render(&[], narrow)];
+        pages.extend(FLAGS.iter().map(|flag| render(&[flag.id], narrow)));
+        for page in pages.iter().skip(1) {
+            let wide = page
+                .lines()
+                .find(|line| line.chars().count() > 48 && line.trim().contains(' '));
+            assert_eq!(wide, None);
+        }
+        assert!(
+            pages[1]
+                .contains("    -c, --content [PATTERN]\n        Search the lines inside files.\n")
+        );
     }
 
     #[test]

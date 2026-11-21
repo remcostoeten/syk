@@ -1,4 +1,8 @@
 use std::io::IsTerminal;
+use std::os::fd::AsFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use crate::pager;
 
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
@@ -7,7 +11,7 @@ const LOGO: &str = "\x1b[1;36m";
 
 const MARGIN: &str = "  ";
 const GAP: &str = "   ";
-const WIDTH: usize = 80;
+pub const WIDTH: usize = 80;
 
 const ART: [&str; 5] = [
     r"          _    ",
@@ -21,21 +25,31 @@ const ABOUT_ROW: usize = 3;
 
 pub const TAGLINE: &str = "Search folder names, file names and contents in one pass.";
 pub const EXPLAIN: &str = "How these arguments are read.";
-pub const PICKS: &str = "The paths you chose with -1 or -O.";
+pub const PICKS: &str = "The paths you chose with -1, -b or -O.";
 pub const SETUP: &str = "Tab completion and the jump command for your shell.";
+
+static HIDDEN: AtomicBool = AtomicBool::new(false);
+
+pub fn hide_logo() {
+    HIDDEN.store(true, Ordering::Relaxed);
+}
 
 #[derive(Clone, Copy)]
 pub struct Look {
     pub banner: bool,
+    pub logo: bool,
     pub styled: bool,
+    pub columns: usize,
 }
 
 impl Look {
-    pub fn of(stream: &impl IsTerminal) -> Look {
+    pub fn of(stream: &(impl IsTerminal + AsFd)) -> Look {
         let terminal = stream.is_terminal();
         Look {
             banner: terminal,
+            logo: terminal && !HIDDEN.load(Ordering::Relaxed),
             styled: terminal && std::env::var_os("NO_COLOR").is_none(),
+            columns: pager::size(stream).map_or(WIDTH, |size| size.columns.min(WIDTH)),
         }
     }
 }
@@ -50,18 +64,18 @@ fn put(out: &mut String, style: &str, text: &str, styled: bool) {
     }
 }
 
-fn fitted(about: &str) -> String {
-    let room = WIDTH - MARGIN.len() - ART[ABOUT_ROW].len() - GAP.len();
+fn fitted(about: &str, columns: usize) -> String {
+    let room = columns.saturating_sub(MARGIN.len() + ART[ABOUT_ROW].len() + GAP.len());
     if about.chars().count() <= room {
         return about.to_string();
     }
-    let mut short: String = about.chars().take(room - 3).collect();
+    let mut short: String = about.chars().take(room.saturating_sub(3)).collect();
     short.push_str("...");
     short
 }
 
 pub fn header(about: &str, look: Look) -> String {
-    if !look.banner {
+    if !look.logo {
         return String::new();
     }
     let mut out = String::with_capacity(512);
@@ -79,7 +93,7 @@ pub fn header(about: &str, look: Look) -> String {
             ABOUT_ROW => {
                 put(&mut out, LOGO, art, look.styled);
                 out.push_str(GAP);
-                out.push_str(&fitted(about));
+                out.push_str(&fitted(about, look.columns));
             }
             _ => put(&mut out, LOGO, art.trim_end(), look.styled),
         }
@@ -90,7 +104,7 @@ pub fn header(about: &str, look: Look) -> String {
 
 pub fn above(about: &str, look: Look) -> String {
     let mut out = header(about, look);
-    if look.banner {
+    if look.logo {
         out.push('\n');
     }
     out
@@ -102,14 +116,18 @@ mod tests {
 
     const SHOWN: Look = Look {
         banner: true,
+        logo: true,
         styled: false,
+        columns: WIDTH,
     };
 
     #[test]
     fn nothing_is_added_outside_a_terminal() {
         let piped = Look {
             banner: false,
+            logo: false,
             styled: false,
+            columns: WIDTH,
         };
         assert_eq!(header(TAGLINE, piped), "");
         assert_eq!(above(EXPLAIN, piped), "");
@@ -137,7 +155,9 @@ mod tests {
     fn the_logo_and_the_name_are_coloured_in_a_terminal() {
         let look = Look {
             banner: true,
+            logo: true,
             styled: true,
+            columns: WIDTH,
         };
         let text = header(TAGLINE, look);
         assert!(text.contains(&format!("{BOLD}syk{RESET}")));

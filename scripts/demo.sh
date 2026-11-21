@@ -144,6 +144,7 @@ export _ZO_DATA_DIR="$XDG_DATA_HOME/zoxide"
 PATH="$sandbox/bin:$(dirname "$binary"):$PATH"
 export PATH
 unset SYK_CONFIG VISUAL SSH_CONNECTION
+export SYK_PAGER=off
 project="$HOME/shop"
 
 days_ago() {
@@ -574,6 +575,11 @@ section_ranking() {
     run "A remembered path scores higher from then on." \
         "syk -d co -W" \
         "components gets 4 points in the picked column, config gets none."
+    if [ "$mode" = step ] || [ "$mode" = section ]; then
+        run "-b shows the results in a list. Move with j and k, press Enter to choose one." \
+            "syk -n route -b" \
+            "The chosen path is printed, and remembered like a pick made with -1."
+    fi
 }
 
 section_actions() {
@@ -645,6 +651,12 @@ section_help() {
         "syk --size --help"
     run "Or name the flag after -h." \
         "syk -h exec"
+    run "Help taller than the window opens in a pager: n next, b back, / search, q quit." \
+        "syk -h -h"
+    run "A word that is not the name of a flag is looked up in every flag page." \
+        "syk -h zoxide"
+    run "-B leaves the logo out and -G prints a view in one piece." \
+        "syk -n -h -B -G"
     run "A wrong flag is exit status 2, with a suggestion." \
         "syk auth --nope"
 }

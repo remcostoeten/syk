@@ -4,6 +4,8 @@ use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 
+use crate::stop;
+
 const BATCH_BYTES: usize = 96 * 1024;
 const BATCH_PATHS: usize = 4096;
 
@@ -57,11 +59,17 @@ pub fn execute(command: &str, paths: &[&[u8]]) -> bool {
     if command.contains("{}") {
         let script = command.replace("{}", "\"$1\"");
         for path in &paths {
+            if stop::asked() {
+                return false;
+            }
             fine &= shell(&script, std::slice::from_ref(path));
         }
     } else {
         let script = format!("{command} \"$@\"");
         for batch in batches(&paths) {
+            if stop::asked() {
+                return false;
+            }
             fine &= shell(&script, batch);
         }
     }

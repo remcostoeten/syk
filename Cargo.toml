@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2024"
 description = "Search folder names, file names and file contents in one pass."
 license = "MIT"
+repository = "https://github.com/remcostoeten/syk"
+homepage = "https://github.com/remcostoeten/syk"
+readme = "README.md"
+rust-version = "1.88"
 keywords = ["search", "grep", "find", "regex", "cli"]
 categories = ["command-line-utilities", "filesystem"]
+exclude = [".github", "docs", "dist-workspace.toml"]
 
 [[bin]]
 name = "syk"
@@ -16,6 +21,7 @@ grep-matcher = "0.1.9"
 grep-regex = "0.1.14"
 grep-searcher = "0.1.17"
 ignore = "0.4.34"
+libc = "0.2.191"
 
 [profile.release]
 opt-level = 3
@@ -23,3 +29,6 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
+
+[profile.dist]
+inherits = "release"

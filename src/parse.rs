@@ -10,7 +10,7 @@ use crate::query::{
 
 pub enum Outcome {
     Run(Box<Query>),
-    Help(Vec<Id>),
+    Help(Vec<Id>, Vec<String>),
     Version,
     Picks,
     Init(String),
@@ -89,8 +89,8 @@ fn read(raw: Vec<OsString>, inherited: usize) -> Result<Outcome, String> {
         .iter()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
-    if let Some(topics) = help_topics(&args[inherited..]) {
-        return Ok(Outcome::Help(topics));
+    if let Some((topics, terms)) = help_topics(&args[inherited..]) {
+        return Ok(Outcome::Help(topics, terms));
     }
 
     let mut draft = Draft {
@@ -161,49 +161,101 @@ fn read(raw: Vec<OsString>, inherited: usize) -> Result<Outcome, String> {
     draft.finish().map(|query| Outcome::Run(Box::new(query)))
 }
 
-fn help_topics(args: &[String]) -> Option<Vec<Id>> {
-    let mut asked = false;
-    let mut topics: Vec<Id> = Vec::new();
-    let mut add = |flag: &Flag, asked: &mut bool| {
-        if flag.id == Id::Help {
-            *asked = true;
-        } else if !topics.contains(&flag.id) {
-            topics.push(flag.id);
-        }
+struct Seen {
+    flags: Vec<(&'static Flag, bool)>,
+    words: Vec<String>,
+}
+
+fn seen(args: &[String]) -> Seen {
+    let mut seen = Seen {
+        flags: Vec::new(),
+        words: Vec::new(),
     };
-    for arg in args {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = &args[index];
+        index += 1;
         if arg == "--" {
             break;
         }
         if filter::is_token(arg) {
             continue;
         }
+        let mut open: Option<&'static Flag> = None;
         if let Some(body) = arg.strip_prefix("--") {
             let name = body.split('=').next().unwrap_or(body);
             if let Some(flag) = flags::by_long(name) {
-                add(flag, &mut asked);
+                seen.flags.push((flag, false));
+                open = (!body.contains('=')).then_some(flag);
             }
         } else if let Some(body) = arg.strip_prefix('-') {
             if body.chars().count() > 1
                 && let Some(flag) = flags::by_long(body)
             {
-                add(flag, &mut asked);
-                continue;
-            }
-            for short in body.chars() {
-                let Some(flag) = flags::by_short(short) else {
-                    break;
-                };
-                add(flag, &mut asked);
-                if !matches!(flag.arity, Arity::Switch) {
-                    break;
+                seen.flags.push((flag, false));
+                open = Some(flag);
+            } else {
+                for (at, short) in body.char_indices() {
+                    let Some(flag) = flags::by_short(short) else {
+                        break;
+                    };
+                    seen.flags.push((flag, false));
+                    if !matches!(flag.arity, Arity::Switch) {
+                        open = body[at + short.len_utf8()..].is_empty().then_some(flag);
+                        break;
+                    }
                 }
             }
         } else if let Some(flag) = flags::by_long(&arg.to_ascii_lowercase()) {
-            add(flag, &mut asked);
+            seen.flags.push((flag, true));
+        } else if !path_like(arg) && extension_token(arg).is_none() {
+            seen.words.push(arg.clone());
+        }
+        let value = args
+            .get(index)
+            .is_some_and(|next| !(next.len() > 1 && next.starts_with('-')));
+        match open.map(|flag| flag.arity) {
+            Some(Arity::Required(_)) if value => index += 1,
+            Some(Arity::Optional(_)) if value && binds(&args[index]) => index += 1,
+            _ => {}
         }
     }
-    asked.then_some(topics)
+    seen
+}
+
+fn help_topics(args: &[String]) -> Option<(Vec<Id>, Vec<String>)> {
+    let seen = seen(args);
+    let mut asked = false;
+    let mut topics: Vec<Id> = Vec::new();
+    for (flag, named) in &seen.flags {
+        let again = flag.id == Id::Help && asked;
+        asked |= flag.id == Id::Help;
+        let view = matches!(flag.id, Id::NoPager | Id::NoBanner) && !named;
+        if (flag.id != Id::Help || again) && !view && !topics.contains(&flag.id) {
+            topics.push(flag.id);
+        }
+    }
+    asked.then_some((topics, seen.words))
+}
+
+#[derive(Default)]
+pub struct Views {
+    pub no_pager: bool,
+    pub no_banner: bool,
+    pub no_config: bool,
+}
+
+pub fn views(args: &[String]) -> Views {
+    let mut views = Views::default();
+    for (flag, named) in seen(args).flags {
+        match flag.id {
+            Id::NoPager if !named => views.no_pager = true,
+            Id::NoBanner if !named => views.no_banner = true,
+            Id::NoConfig if !named => views.no_config = true,
+            _ => {}
+        }
+    }
+    views
 }
 
 impl Draft {
@@ -364,6 +416,8 @@ impl Draft {
             Id::Null => self.output.null = true,
             Id::NoLinks => self.output.no_links = true,
             Id::Open => self.output.open = true,
+            Id::Browse => self.output.browse = true,
+            Id::NoPager | Id::NoBanner => {}
             Id::Exec => {
                 if text.trim().is_empty() {
                     return Err(
@@ -832,10 +886,18 @@ mod tests {
 
     #[test]
     fn a_wildcard_the_shell_expanded_is_noticed() {
-        let expanded = query(&["zzfoo", "Cargo.toml"]).expanded;
+        let mut manifests: Vec<String> = std::fs::read_dir(".")
+            .expect("the project folder")
+            .filter_map(|entry| entry.ok()?.file_name().into_string().ok())
+            .filter(|name| name.ends_with(".toml"))
+            .collect();
+        manifests.sort();
+        let mut args = vec!["zzfoo"];
+        args.extend(manifests.iter().map(String::as_str));
+        let expanded = query(&args).expanded;
         assert_eq!(
             expanded.map(|found| (found.extension, found.files)),
-            Some((".toml".to_string(), 1))
+            Some((".toml".to_string(), manifests.len()))
         );
         assert!(query(&["zzfoo", "src"]).expanded.is_none());
         assert!(query(&["zzfoo", "src/main.rs"]).expanded.is_none());
@@ -946,16 +1008,38 @@ mod tests {
 
     #[test]
     fn help_collects_topics() {
-        let topics = |args: &[&str]| match parse(args.iter().map(OsString::from).collect()) {
-            Ok(Outcome::Help(topics)) => topics,
+        let asked = |args: &[&str]| match parse(args.iter().map(OsString::from).collect()) {
+            Ok(Outcome::Help(topics, terms)) => (topics, terms),
             _ => panic!("expected help for {args:?}"),
         };
+        let topics = |args: &[&str]| asked(args).0;
         assert!(topics(&["-h"]).is_empty());
         assert_eq!(topics(&["-n", "-h"]), [Id::Name]);
         assert_eq!(topics(&["--size", "--help"]), [Id::Size]);
         assert_eq!(topics(&["-h", "modified"]), [Id::Modified]);
         assert_eq!(topics(&["-lh"]), [Id::List]);
         assert_eq!(topics(&["-1", "-h"]), [Id::Best]);
+        assert_eq!(topics(&["-h", "-h"]), [Id::Help]);
+        assert_eq!(topics(&["-h", "help"]), [Id::Help]);
+        assert_eq!(topics(&["-n", "--help", "-h"]), [Id::Name, Id::Help]);
+        assert!(topics(&["-h", "-G", "-B"]).is_empty());
+        assert_eq!(topics(&["-h", "no-pager"]), [Id::NoPager]);
+        assert_eq!(topics(&["-c", "json", "-h"]), [Id::Content]);
+        assert_eq!(topics(&["-e", "ts", "-h"]), [Id::Ext]);
+        let (topics, terms) = asked(&["-h", "pipe", "src/", ".ts"]);
+        assert!(topics.is_empty());
+        assert_eq!(terms, ["pipe"]);
+    }
+
+    #[test]
+    fn view_flags_are_found_among_the_other_arguments() {
+        let words =
+            |args: &[&str]| -> Vec<String> { args.iter().map(|arg| arg.to_string()).collect() };
+        let views = views(&words(&["foo", "-xG", "--no-banner"]));
+        assert!(views.no_pager && views.no_banner && !views.no_config);
+        let views = super::views(&words(&["-f", "echo -G", "-U", "--", "-B"]));
+        assert!(!views.no_pager && !views.no_banner && views.no_config);
+        assert!(!super::views(&words(&["-h", "no-pager"])).no_pager);
         assert_eq!(query(&["-n", "zzfoo", "-1h"]).filters.ages[0].seconds, 3600);
     }
 }

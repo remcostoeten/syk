@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use grep_matcher::Matcher;
 use grep_searcher::{Searcher, Sink, SinkContext, SinkMatch};
 
+use crate::stop;
+
 const RESET: &[u8] = b"\x1b[0m";
 const DIM: &[u8] = b"\x1b[2m";
 const BOLD: &[u8] = b"\x1b[1m";
@@ -66,7 +68,7 @@ impl Budget {
     }
 
     pub fn stopped(&self) -> bool {
-        self.stopped.load(Ordering::Relaxed)
+        self.stopped.load(Ordering::Relaxed) || stop::asked()
     }
 }
 

@@ -131,6 +131,7 @@ pub struct Output {
     pub no_links: bool,
     pub open: bool,
     pub exec: Option<String>,
+    pub browse: bool,
 }
 
 impl Output {

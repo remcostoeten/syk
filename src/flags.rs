@@ -43,6 +43,9 @@ pub enum Id {
     NoConfig,
     Init,
     Setup,
+    Browse,
+    NoPager,
+    NoBanner,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -158,7 +161,7 @@ fn distance(left: &str, right: &str) -> usize {
     row[right.len()]
 }
 
-pub static FLAGS: [Flag; 43] = [
+pub static FLAGS: [Flag; 46] = [
     Flag {
         id: Id::Name,
         short: 'n',
@@ -595,6 +598,28 @@ pub static FLAGS: [Flag; 43] = [
         related: &[Id::Rank, Id::Why, Id::Picks, Id::Max],
     },
     Flag {
+        id: Id::Browse,
+        short: 'b',
+        long: "browse",
+        aliases: &["choose", "select"],
+        arity: Arity::Switch,
+        group: Group::Ranking,
+        summary: "Choose one result from a list, and remember it.",
+        detail: "Ranks the results as -r does and shows them in a list instead of printing them, best first. j, k and the arrow keys move, n and b move a screen at a time, / narrows the list as you type, Enter chooses and q cancels.\n\nThe chosen path is printed, so it can be handed to another command, and it is remembered like a pick made with -1. A matching line is a result of its own: with -O the editor opens at that line. With -f the command runs on the chosen path only.\n\nThe list is drawn on the terminal itself, so it also works inside a command substitution. Cancelling prints nothing and exits with status 1.",
+        examples: &[
+            ("syk -n config -b", "choose a file and print its path"),
+            (
+                "syk -c TODO -b -O",
+                "choose a TODO line and open the file there",
+            ),
+            (
+                "cd (syk -d api -b)",
+                "choose a folder and go there, in fish",
+            ),
+        ],
+        related: &[Id::Best, Id::Open, Id::Exec, Id::Picks],
+    },
+    Flag {
         id: Id::Why,
         short: 'W',
         long: "why",
@@ -620,7 +645,7 @@ pub static FLAGS: [Flag; 43] = [
         aliases: &["history", "remembered"],
         arity: Arity::Switch,
         group: Group::Ranking,
-        summary: "List the paths remembered by -1 and -O.",
+        summary: "List the paths remembered by -1, -b and -O.",
         detail: "Prints every remembered path with its current score, how often it was picked and when it was last picked, best first. The score is the number of picks, multiplied by 4 within the last hour, by 2 within the last day, by 0.5 within the last week and by 0.25 after that.\n\nIt also reports where the file is kept and how many folders zoxide knows. No search is run.",
         examples: &[("syk -k", "what syk has learned from your picks")],
         related: &[Id::Best, Id::Why],
@@ -766,6 +791,37 @@ pub static FLAGS: [Flag; 43] = [
         related: &[Id::Sort],
     },
     Flag {
+        id: Id::NoPager,
+        short: 'G',
+        long: "no-pager",
+        aliases: &[],
+        arity: Arity::Switch,
+        group: Group::Other,
+        summary: "Print help and other views in one piece.",
+        detail: "Help, the welcome screen and the output of -x and -k open in a pager when they are taller than the window. -G prints them in one piece instead. Search results are never paged.\n\nPut -G in the config file to switch the pager off for good. Setting SYK_PAGER=off does the same.\n\nBecause -G changes how help is shown, it does not ask for its own page when it stands next to -h. syk -h no-pager shows this page.",
+        examples: &[
+            ("syk -h -G", "the overview in one piece"),
+            ("syk -h no-pager", "this page"),
+        ],
+        related: &[Id::Help, Id::NoBanner, Id::NoConfig],
+    },
+    Flag {
+        id: Id::NoBanner,
+        short: 'B',
+        long: "no-banner",
+        aliases: &["no-logo"],
+        arity: Arity::Switch,
+        group: Group::Other,
+        summary: "Leave the logo out of help and other views.",
+        detail: "In a terminal, help, the welcome screen, -x, -k and --setup start with the logo. -B leaves it out. Help and the welcome screen then start with the two-line title that piped output gets.\n\nPut -B in the config file to leave the logo out for good.\n\nLike -G, it does not ask for its own page when it stands next to -h. syk -h no-banner shows this page.",
+        examples: &[
+            ("syk -h -B", "the overview without the logo"),
+            ("syk foo -x -B", "how foo is read, without the logo"),
+            ("syk -h no-banner", "this page"),
+        ],
+        related: &[Id::Help, Id::NoPager, Id::NoConfig],
+    },
+    Flag {
         id: Id::NoConfig,
         short: 'U',
         long: "no-config",
@@ -825,12 +881,15 @@ pub static FLAGS: [Flag; 43] = [
         arity: Arity::Switch,
         group: Group::Other,
         summary: "Show help, or the page of the flag next to it.",
-        detail: "On its own, -h prints the overview of every flag. Together with other flags it prints the full page of each of those flags instead. The long name of a flag works as a bare word too.",
+        detail: "On its own, -h prints the overview of every flag. Together with other flags it prints the full page of each of those flags instead. The long name of a flag works as a bare word too. Given twice, -h prints this page. A word that is not the name of a flag is looked up in every flag page: syk -h pipe lists the flags whose page mentions pipe.\n\nIn a terminal, a page that is taller than the window opens in a pager. n or Space shows the next screen, which starts at a section heading, and b goes back. j, k and the arrow keys move one line, g and G go to the start and the end. q closes the pager and leaves the screen you were reading in view. The bottom line names the section each key leads to. s lists the sections so you can jump to one, - followed by the letter of a flag opens the page of that flag, and ? lists every key.\n\n/ searches the page. The page follows what you type, lower case matches any case, and one upper case letter makes the case exact. Enter keeps the search: n and b then step through the matching lines, and Esc goes back to paging.\n\nUse -G, or set SYK_PAGER=off, to print a page in one piece. Output that goes into a pipe or a file is never paged.",
         examples: &[
             ("syk -h", "the overview"),
             ("syk -n -h", "the page for -n, --name"),
             ("syk --modified --help", "the page for -M, --modified"),
             ("syk -h size", "the page for -S, --size"),
+            ("syk -h -h", "this page"),
+            ("syk -h pipe", "the flags whose page mentions pipe"),
+            ("SYK_PAGER=off syk -h", "the overview, without paging"),
         ],
         related: &[Id::Explain],
     },

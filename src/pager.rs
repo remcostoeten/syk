@@ -215,12 +215,19 @@ pub enum Typed {
 }
 
 fn waiting(tty: &File, timeout: i32) -> bool {
-    let mut poll = libc::pollfd {
-        fd: tty.as_raw_fd(),
-        events: libc::POLLIN,
-        revents: 0,
+    let descriptor = tty.as_raw_fd();
+    let mut wait = libc::timeval {
+        tv_sec: (timeout / 1000) as _,
+        tv_usec: ((timeout % 1000) * 1000) as _,
     };
-    unsafe { libc::poll(&mut poll, 1, timeout) > 0 }
+    // macOS cannot poll a terminal device, select works on both systems
+    unsafe {
+        let mut watched: libc::fd_set = std::mem::zeroed();
+        libc::FD_ZERO(&mut watched);
+        libc::FD_SET(descriptor, &mut watched);
+        let none = std::ptr::null_mut();
+        libc::select(descriptor + 1, &mut watched, none, none, &mut wait) > 0
+    }
 }
 
 fn byte(tty: &mut File) -> io::Result<u8> {
@@ -540,14 +547,21 @@ fn footer(book: &Book<'_>, pages: &[usize], rows: &Range<usize>, face: Bar) -> S
         .rfind(|start| **start < top)
         .map(|start| book.title(*start));
     let mut hints = Vec::with_capacity(8);
+    let plain = book.marks.is_empty();
+    let named = |word: &str, title: &str| match plain {
+        true => word.to_string(),
+        false => format!("{word}: {title}"),
+    };
     if let Some(title) = ahead {
-        hints.push(hint(0, "n", &format!("next: {title}")));
+        hints.push(hint(0, "n", &named("next", title)));
     }
     if let Some(title) = behind {
-        hints.push(hint(0, "b", &format!("back: {title}")));
+        hints.push(hint(0, "b", &named("back", title)));
     }
     hints.push(hint(2, "/", "search"));
-    hints.push(hint(3, "s", "sections"));
+    if !plain {
+        hints.push(hint(3, "s", "sections"));
+    }
     if face.flags {
         hints.push(hint(4, "-", "flag"));
     }
@@ -990,6 +1004,42 @@ mod tests {
         assert_eq!(
             footer(&book, &[0, 5], &(0..24), WIDE),
             "  1/2   n next: FOUR   / search   s sections   ? keys   q quit"
+        );
+    }
+
+    #[test]
+    fn a_page_without_headings_gets_a_plain_footer() {
+        let (text, _) = sample();
+        let book = Book::new(&text, &[]);
+        let pages = book.pages(14);
+        assert_eq!(pages, [0, 14, 15]);
+        assert_eq!(
+            footer(&book, &pages, &(14..28), WIDE),
+            "  2/3   n next   b back   / search   ? keys   q quit"
+        );
+    }
+
+    #[test]
+    fn hints_are_dropped_when_the_window_is_narrow() {
+        let (text, marks) = sample();
+        let book = Book::new(&text, &marks);
+        let pages = book.pages(14);
+        let narrow = Bar {
+            columns: 44,
+            flags: true,
+            ..WIDE
+        };
+        assert_eq!(
+            footer(&book, &pages, &(12..26), narrow),
+            "  2/3   n next: FOUR   b back: top   q quit"
+        );
+        let wider = Bar {
+            columns: 64,
+            ..narrow
+        };
+        assert_eq!(
+            footer(&book, &pages, &(12..26), wider),
+            "  2/3   n next: FOUR   b back: top   / search   ? keys   q quit"
         );
     }
 

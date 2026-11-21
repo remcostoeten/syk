@@ -1,6 +1,6 @@
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::FromRawFd;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -859,6 +859,7 @@ fn setup_prints_instructions_for_an_agent() {
 }
 
 const PATIENCE: Duration = Duration::from_secs(10);
+const PAUSE: Duration = Duration::from_millis(20);
 
 struct Terminal {
     screen: File,
@@ -888,6 +889,9 @@ impl Terminal {
         assert_eq!(opened, 0, "no pseudo-terminal");
         let sized = unsafe { libc::ioctl(screen, libc::TIOCSWINSZ, &size) };
         assert_eq!(sized, 0, "no window size");
+        let flags = unsafe { libc::fcntl(screen, libc::F_GETFL) };
+        let free = unsafe { libc::fcntl(screen, libc::F_SETFL, flags | libc::O_NONBLOCK) };
+        assert_eq!(free, 0, "the terminal cannot be read without waiting");
         let inside = unsafe { File::from_raw_fd(inside) };
         let mut command = fixture.command(args);
         command
@@ -935,17 +939,13 @@ impl Terminal {
                     .rev()
                     .collect::<String>()
             );
-            let mut ready = libc::pollfd {
-                fd: self.screen.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            };
-            if unsafe { libc::poll(&mut ready, 1, 100) } <= 0 {
-                continue;
-            }
             let mut chunk = [0u8; 8192];
-            let read = self.screen.read(&mut chunk).unwrap_or(0);
-            self.seen.push_str(&String::from_utf8_lossy(&chunk[..read]));
+            match self.screen.read(&mut chunk) {
+                Ok(read) if read > 0 => {
+                    self.seen.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                }
+                _ => std::thread::sleep(PAUSE),
+            }
         }
     }
 
@@ -956,14 +956,34 @@ impl Terminal {
 
     fn finish(mut self, keys: &str) -> (String, i32) {
         self.screen.write_all(keys.as_bytes()).expect("send keys");
+        let started = Instant::now();
+        let status = loop {
+            if let Some(status) = self.child.try_wait().expect("wait for syk") {
+                break status;
+            }
+            if started.elapsed() > PATIENCE {
+                let _ = self.child.kill();
+                panic!("syk did not exit after {keys:?}");
+            }
+            let mut chunk = [0u8; 8192];
+            if !matches!(self.screen.read(&mut chunk), Ok(read) if read > 0) {
+                std::thread::sleep(PAUSE);
+            }
+        };
         let mut printed = String::new();
         if let Some(mut stdout) = self.child.stdout.take() {
             stdout
                 .read_to_string(&mut printed)
                 .expect("read the output");
         }
-        let status = self.child.wait().expect("wait for syk");
         (printed, status.code().unwrap_or(-1))
+    }
+}
+
+impl Drop for Terminal {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

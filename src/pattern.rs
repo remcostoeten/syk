@@ -69,6 +69,7 @@ impl Term {
 pub struct Pattern {
     terms: Vec<Term>,
     any: Option<RegexMatcher>,
+    rarest: usize,
 }
 
 impl Pattern {
@@ -93,9 +94,13 @@ impl Pattern {
             .collect::<Result<Vec<Term>, String>>()?;
         let either: Vec<String> = terms.iter().map(Term::either).collect();
         let any = build(&either.join("|"), &fixed, false).map_err(|error| error.to_string())?;
+        let rarest = (0..terms.len())
+            .max_by_key(|index| terms[*index].source.len())
+            .unwrap_or(0);
         Ok(Pattern {
             terms,
             any: Some(any),
+            rarest,
         })
     }
 
@@ -103,6 +108,7 @@ impl Pattern {
         Ok(Pattern {
             terms: vec![Term::compile(source, matching)?],
             any: None,
+            rarest: 0,
         })
     }
 
@@ -137,7 +143,8 @@ impl Pattern {
     fn whole(&self, line: &[u8]) -> bool {
         self.terms
             .iter()
-            .all(|term| term.lines.is_match(line).unwrap_or(false))
+            .enumerate()
+            .all(|(index, term)| index == self.rarest || term.lines.is_match(line).unwrap_or(false))
     }
 }
 
@@ -146,21 +153,20 @@ impl Matcher for Pattern {
     type Error = NoError;
 
     fn find_at(&self, haystack: &[u8], mut at: usize) -> Result<Option<Match>, NoError> {
-        let any = self.lines();
+        let scan = &self.terms[self.rarest].lines;
         while at <= haystack.len() {
-            let Ok(Some(found)) = any.find_at(haystack, at) else {
+            let from = memchr::memrchr(b'\n', &haystack[..at]).map_or(0, |index| index + 1);
+            let Ok(Some(found)) = scan.find_at(haystack, from) else {
                 break;
             };
-            let start = haystack[..found.start()]
-                .iter()
-                .rposition(|byte| *byte == b'\n')
-                .map_or(0, |index| index + 1);
-            let end = haystack[found.end()..]
-                .iter()
-                .position(|byte| *byte == b'\n')
+            let start =
+                memchr::memrchr(b'\n', &haystack[..found.start()]).map_or(0, |index| index + 1);
+            let end = memchr::memchr(b'\n', &haystack[found.end()..])
                 .map_or(haystack.len(), |index| found.end() + index);
-            if self.whole(&haystack[start..end]) {
-                return Ok(Some(found));
+            if self.whole(&haystack[start..end])
+                && let Ok(Some(first)) = self.lines().find_at(&haystack[..end], at.max(start))
+            {
+                return Ok(Some(first));
             }
             at = end + 1;
         }
@@ -291,6 +297,23 @@ mod tests {
                 .expect("no error")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn every_word_on_a_matching_line_is_found_in_turn() {
+        let pattern = both(&["pub", "unsafe"]);
+        let text = b"pub fn alone\npub x unsafe y pub\nunsafe alone\n";
+        let mut found = Vec::new();
+        let mut at = 0;
+        while let Some(hit) = pattern.find_at(text, at).expect("no error") {
+            found.push((hit.start(), &text[hit.start()..hit.end()]));
+            at = hit.end();
+        }
+        assert_eq!(
+            found,
+            [(13, &b"pub"[..]), (19, &b"unsafe"[..]), (28, &b"pub"[..])]
+        );
+        assert_eq!(pattern.rarest, 1);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, FileType};
-use std::io::{self, IsTerminal, Write};
+use std::fs::{self, File, FileType};
+use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path};
 use std::process::ExitCode;
@@ -24,6 +24,8 @@ use crate::spell::{self, Gather, Seen};
 use crate::stop;
 
 const CHUNK: usize = 64 * 1024;
+const WHOLE: usize = 64 * 1024;
+const MARKS: [[u8; 2]; 2] = [[0xFF, 0xFE], [0xFE, 0xFF]];
 const WAIT: Duration = Duration::from_millis(10);
 
 #[allow(clippy::large_enum_variant)]
@@ -149,6 +151,7 @@ struct Outcome {
 struct Worker<'a> {
     shared: &'a Shared,
     searcher: Searcher,
+    loaded: Vec<u8>,
     out: Vec<u8>,
     flushed: Instant,
     scope: (OsString, bool),
@@ -171,6 +174,7 @@ impl<'a> Worker<'a> {
         Worker {
             shared,
             searcher,
+            loaded: Vec::new(),
             out: Vec::with_capacity(CHUNK),
             flushed: Instant::now(),
             scope: (OsString::new(), false),
@@ -404,7 +408,18 @@ impl<'a> Worker<'a> {
             first: None,
             binary: false,
         };
-        let result = self.searcher.search_path(matcher, entry.path(), &mut sink);
+        let result = match load(entry.path(), &mut self.loaded) {
+            Ok(Loaded::Text(length)) => {
+                self.searcher
+                    .search_slice(matcher, &self.loaded[..length], &mut sink)
+            }
+            Ok(Loaded::Binary) => Ok(()),
+            Ok(Loaded::Large(rest)) => {
+                let whole = self.loaded.as_slice().chain(rest);
+                self.searcher.search_reader(matcher, whole, &mut sink)
+            }
+            Err(error) => Err(error),
+        };
         let (mut headed, mut hits, first) = (sink.headed, sink.hits, sink.first);
         if sink.binary {
             self.out.truncate(start);
@@ -536,6 +551,37 @@ impl Drop for Worker<'_> {
             tally.add(self.tally);
         }
     }
+}
+
+enum Loaded {
+    Text(usize),
+    Binary,
+    Large(File),
+}
+
+fn load(path: &Path, buffer: &mut Vec<u8>) -> io::Result<Loaded> {
+    let mut file = File::open(path)?;
+    if buffer.is_empty() {
+        buffer.resize(WHOLE, 0);
+    }
+    let mut length = 0;
+    let mut wide = false;
+    while length < buffer.len() {
+        let read = match file.read(&mut buffer[length..]) {
+            Ok(0) => return Ok(Loaded::Text(length)),
+            Ok(read) => read,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        };
+        if length == 0 {
+            wide = MARKS.iter().any(|mark| buffer[..read].starts_with(mark));
+        }
+        if !wide && memchr::memchr(0, &buffer[length..length + read]).is_some() {
+            return Ok(Loaded::Binary);
+        }
+        length += read;
+    }
+    Ok(Loaded::Large(file))
 }
 
 fn display(path: &Path) -> &[u8] {

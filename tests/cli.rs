@@ -102,6 +102,56 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn large_binary_and_wide_files_are_read_like_small_ones() {
+    let fixture = Fixture::new();
+    let filler = "plain text line that fills the file\n".repeat(2500);
+    let write = |path: &str, bytes: Vec<u8>| {
+        fs::write(fixture.root.join(path), bytes).expect("write file");
+    };
+    fixture.dir("edge");
+    write(
+        "edge/large.txt",
+        format!("{filler}sought at the end\n").into_bytes(),
+    );
+    write(
+        "edge/late.bin",
+        format!("{filler}sought before a zero\n\0tail\n").into_bytes(),
+    );
+    write("edge/early.bin", b"sought\0\n".to_vec());
+    write(
+        "edge/exact.txt",
+        format!("{}\nsought after one buffer\n", "x".repeat(65535)).into_bytes(),
+    );
+    write("edge/noeol.txt", b"sought without newline".to_vec());
+    write("edge/empty.txt", Vec::new());
+    let mut wide = vec![0xFF, 0xFE];
+    wide.extend(
+        "first\nsought in utf16\n"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes),
+    );
+    write("edge/wide.txt", wide);
+    assert_eq!(
+        fixture.lines(&["-c", "sought", "-p"]),
+        [
+            "edge/exact.txt:2:sought after one buffer",
+            "edge/large.txt:2501:sought at the end",
+            "edge/noeol.txt:1:sought without newline",
+            "edge/wide.txt:2:sought in utf16",
+        ]
+    );
+    assert_eq!(
+        fixture.lines(&["-c", "sought", "-N"]),
+        [
+            "edge/exact.txt:1",
+            "edge/large.txt:1",
+            "edge/noeol.txt:1",
+            "edge/wide.txt:1",
+        ]
+    );
+}
+
+#[test]
 fn bare_pattern_finds_folders_files_and_lines() {
     let fixture = Fixture::new();
     assert_eq!(

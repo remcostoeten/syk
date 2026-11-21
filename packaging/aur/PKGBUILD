@@ -1,0 +1,20 @@
+pkgname=syk-bin
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Search folder names, file names and file contents in one pass"
+arch=('x86_64' 'aarch64')
+url="https://github.com/remcostoeten/syk"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+provides=('syk')
+conflicts=('syk')
+source_x86_64=("syk-$pkgver-x86_64.tar.xz::$url/releases/download/v$pkgver/syk-search-x86_64-unknown-linux-gnu.tar.xz")
+source_aarch64=("syk-$pkgver-aarch64.tar.xz::$url/releases/download/v$pkgver/syk-search-aarch64-unknown-linux-gnu.tar.xz")
+sha256sums_x86_64=('9797a972ce7d3fdfd133aa512ef1a154996f715d15dcd9eff1cf26c87a2d4442')
+sha256sums_aarch64=('36a27db2fb727eec1d773a8b169dcec67817895543145478b146602263ab671a')
+
+package() {
+    cd "syk-search-$CARCH-unknown-linux-gnu"
+    install -Dm755 syk "$pkgdir/usr/bin/syk"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

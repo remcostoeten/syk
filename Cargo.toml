@@ -9,7 +9,7 @@ readme = "README.md"
 rust-version = "1.88"
 keywords = ["search", "grep", "find", "regex", "cli"]
 categories = ["command-line-utilities", "filesystem"]
-exclude = [".github", "docs", "dist-workspace.toml"]
+exclude = [".github", "docs", "packaging", "dist-workspace.toml"]
 
 [[bin]]
 name = "syk"

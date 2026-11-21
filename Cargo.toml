@@ -5,7 +5,6 @@ edition = "2024"
 description = "Search folder names, file names and file contents in one pass."
 license = "MIT"
 repository = "https://github.com/remcostoeten/syk"
-homepage = "https://github.com/remcostoeten/syk"
 readme = "README.md"
 rust-version = "1.88"
 keywords = ["search", "grep", "find", "regex", "cli"]

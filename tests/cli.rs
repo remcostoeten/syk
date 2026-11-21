@@ -881,11 +881,13 @@ impl Terminal {
                 &mut screen,
                 &mut inside,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                &size,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(opened, 0, "no pseudo-terminal");
+        let sized = unsafe { libc::ioctl(screen, libc::TIOCSWINSZ, &size) };
+        assert_eq!(sized, 0, "no window size");
         let inside = unsafe { File::from_raw_fd(inside) };
         let mut command = fixture.command(args);
         command

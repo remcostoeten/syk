@@ -151,6 +151,58 @@ fn large_binary_and_wide_files_are_read_like_small_ones() {
     );
 }
 
+#[cfg(target_os = "linux")]
+fn forget(path: &Path) {
+    use std::os::fd::AsRawFd;
+
+    let file = File::open(path).expect("open file");
+    file.sync_all().expect("write file to disk");
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn forget(_: &Path) {}
+
+#[test]
+fn files_are_found_whether_or_not_their_data_is_in_memory() {
+    for count in [40, 400] {
+        let fixture = Fixture::new();
+        let mut wanted = Vec::new();
+        for index in 0..count {
+            let path = format!("many/{}/{index}.txt", index % 7);
+            fixture.file(&path, &format!("filler\nsought {index}\n"));
+            forget(&fixture.root.join(&path));
+            wanted.push(format!("{path}:2:sought {index}"));
+        }
+        wanted.sort();
+        let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
+        for _ in 0..2 {
+            let (printed, status) = fixture.run(&["-c", "sought", "-p"]);
+            let mut lines: Vec<&str> = printed.lines().collect();
+            lines.sort();
+            assert_eq!((lines, status), (wanted.clone(), 0));
+        }
+    }
+}
+
+#[test]
+fn heavy_files_in_a_small_tree_are_all_searched() {
+    let fixture = Fixture::new();
+    let text = "sought on every line\n".repeat(20_000);
+    let mut wanted = Vec::new();
+    for index in 0..8 {
+        fixture.file(&format!("heavy/{index}.txt"), &text);
+        wanted.push(format!("heavy/{index}.txt:20000"));
+    }
+    let wanted: Vec<&str> = wanted.iter().map(String::as_str).collect();
+    let (printed, status) = fixture.run(&["-c", "sought", "-N"]);
+    let mut lines: Vec<&str> = printed.lines().collect();
+    lines.sort();
+    assert_eq!((lines, status), (wanted, 0));
+}
+
 #[test]
 fn bare_pattern_finds_folders_files_and_lines() {
     let fixture = Fixture::new();

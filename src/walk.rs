@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, FileType};
 use std::io::{self, IsTerminal, Read, Write};
@@ -27,6 +27,10 @@ const CHUNK: usize = 64 * 1024;
 const WHOLE: usize = 64 * 1024;
 const MARKS: [[u8; 2]; 2] = [[0xFF, 0xFE], [0xFE, 0xFF]];
 const WAIT: Duration = Duration::from_millis(10);
+const AHEAD: usize = 32;
+const FEW: usize = 128;
+const PATIENCE: Duration = Duration::from_millis(2);
+const WORKERS: usize = 12;
 
 #[allow(clippy::large_enum_variant)]
 pub enum Compiled {
@@ -39,6 +43,15 @@ pub enum Compiled {
         name: Option<Pattern>,
         content: Option<Pattern>,
     },
+}
+
+impl Compiled {
+    fn content(&self) -> Option<&Pattern> {
+        match self {
+            Compiled::Union { pattern, targets } => pattern.as_ref().filter(|_| targets.content),
+            Compiled::Narrow { content, .. } => content.as_ref(),
+        }
+    }
 }
 
 pub fn compile(query: &Query) -> Result<Compiled, String> {
@@ -140,6 +153,20 @@ enum Pass {
     Again,
 }
 
+type Found = Result<DirEntry, ignore::Error>;
+
+#[derive(Clone, Copy)]
+struct Job {
+    hit: Option<(usize, usize)>,
+    named: bool,
+    plain: bool,
+}
+
+struct Waiting {
+    entry: DirEntry,
+    job: Job,
+}
+
 struct Outcome {
     found: bool,
     failed: bool,
@@ -152,6 +179,8 @@ struct Worker<'a> {
     shared: &'a Shared,
     searcher: Searcher,
     loaded: Vec<u8>,
+    ahead: usize,
+    waiting: VecDeque<Waiting>,
     out: Vec<u8>,
     flushed: Instant,
     scope: (OsString, bool),
@@ -164,7 +193,7 @@ struct Worker<'a> {
 }
 
 impl<'a> Worker<'a> {
-    fn new(shared: &'a Shared) -> Worker<'a> {
+    fn new(shared: &'a Shared, ahead: usize) -> Worker<'a> {
         let searcher = SearcherBuilder::new()
             .binary_detection(BinaryDetection::quit(0))
             .line_number(true)
@@ -175,6 +204,8 @@ impl<'a> Worker<'a> {
             shared,
             searcher,
             loaded: Vec::new(),
+            ahead,
+            waiting: VecDeque::new(),
             out: Vec::with_capacity(CHUNK),
             flushed: Instant::now(),
             scope: (OsString::new(), false),
@@ -187,7 +218,7 @@ impl<'a> Worker<'a> {
         }
     }
 
-    fn visit(&mut self, result: Result<DirEntry, ignore::Error>) -> WalkState {
+    fn visit(&mut self, result: Found) -> WalkState {
         if self.shared.budget.stopped() {
             return WalkState::Quit;
         }
@@ -201,22 +232,70 @@ impl<'a> Worker<'a> {
         let Some(kind) = entry.file_type() else {
             return WalkState::Continue;
         };
-        self.quality = 0.0;
-        self.line = None;
         self.tally.entries += 1;
         if kind.is_dir() {
+            self.quality = 0.0;
+            self.line = None;
             if entry.depth() > 0 {
                 self.folder(&entry);
             }
-        } else {
-            self.file(&entry, kind);
+            self.close(&entry);
+            return WalkState::Continue;
         }
+        let Some(job) = self.wanted(&entry, kind) else {
+            self.close(&entry);
+            return WalkState::Continue;
+        };
+        if !self.reads(job) {
+            self.handle(&entry, job, None);
+            return WalkState::Continue;
+        }
+        let patient = self.ahead == 0;
+        match self.load(entry.path(), patient) {
+            Err(error) if !patient && error.kind() == io::ErrorKind::WouldBlock => {
+                self.waiting.push_back(Waiting { entry, job });
+                if self.waiting.len() > self.ahead {
+                    self.next();
+                }
+            }
+            loaded => self.handle(&entry, job, Some(loaded)),
+        }
+        WalkState::Continue
+    }
+
+    fn load(&mut self, path: &Path, patient: bool) -> io::Result<Loaded> {
+        fill(File::open(path)?, &mut self.loaded, patient)
+    }
+
+    fn reads(&self, job: Job) -> bool {
+        let shared = self.shared;
+        job.plain
+            && !shared.gather
+            && shared.plan.content().is_some()
+            && !(job.named && shared.layout == Layout::List)
+    }
+
+    fn next(&mut self) {
+        let Some(waiting) = self.waiting.pop_front() else {
+            return;
+        };
+        let loaded = self.load(waiting.entry.path(), true);
+        self.handle(&waiting.entry, waiting.job, Some(loaded));
+    }
+
+    fn handle(&mut self, entry: &DirEntry, job: Job, loaded: Option<io::Result<Loaded>>) {
+        self.quality = 0.0;
+        self.line = None;
+        self.file(entry, job, loaded);
+        self.close(entry);
+    }
+
+    fn close(&mut self, entry: &DirEntry) {
         if self.shared.keep {
-            self.keep(&entry);
+            self.keep(entry);
         } else {
             self.settle();
         }
-        WalkState::Continue
     }
 
     fn keep(&mut self, entry: &DirEntry) {
@@ -287,12 +366,12 @@ impl<'a> Worker<'a> {
         );
     }
 
-    fn file(&mut self, entry: &DirEntry, kind: FileType) {
+    fn wanted(&mut self, entry: &DirEntry, kind: FileType) -> Option<Job> {
         let shared = self.shared;
         match shared.filters.kind {
-            Some(Kind::Dir) => return,
-            Some(Kind::File) if !kind.is_file() => return,
-            Some(Kind::Link) if !kind.is_symlink() => return,
+            Some(Kind::Dir) => return None,
+            Some(Kind::File) if !kind.is_file() => return None,
+            Some(Kind::Link) if !kind.is_symlink() => return None,
             _ => {}
         }
         let name = entry.file_name().as_bytes();
@@ -302,21 +381,19 @@ impl<'a> Worker<'a> {
                 .iter()
                 .any(|extension| ends_with(name, extension))
         {
-            return;
+            return None;
         }
         if shared.stat && !self.passes_stat(entry) {
-            return;
+            return None;
         }
-
-        let (hit, alone, content) = match &shared.plan {
+        let (hit, alone) = match &shared.plan {
             Compiled::Union { pattern, targets } => {
                 let hit = match pattern {
                     _ if !targets.files => None,
                     None => Some(None),
                     Some(pattern) => pattern.find(name).map(Some),
                 };
-                let content = pattern.as_ref().filter(|_| targets.content);
-                (hit, true, content)
+                (hit, true)
             }
             Compiled::Narrow {
                 dir,
@@ -326,29 +403,36 @@ impl<'a> Worker<'a> {
                 if let Some(dir) = dir
                     && !self.in_scope(entry, dir)
                 {
-                    return;
+                    return None;
                 }
                 let hit = match wanted {
                     None => None,
-                    Some(wanted) => match wanted.find(name) {
-                        Some(found) => Some(Some(found)),
-                        None => return,
-                    },
+                    Some(wanted) => Some(Some(wanted.find(name)?)),
                 };
-                (hit, content.is_none(), content.as_ref())
+                (hit, content.is_none())
             }
         };
+        let job = Job {
+            hit: hit.flatten(),
+            named: alone && hit.is_some(),
+            plain: kind.is_file(),
+        };
+        (job.named || (job.plain && shared.plan.content().is_some())).then_some(job)
+    }
 
+    fn file(&mut self, entry: &DirEntry, job: Job, loaded: Option<io::Result<Loaded>>) {
+        let shared = self.shared;
+        let name = entry.file_name().as_bytes();
         let path = display(entry.path());
         let item = Entry {
             path,
             name_at: path.len().saturating_sub(name.len()),
-            hit: hit.flatten(),
+            hit: job.hit,
             folder: false,
         };
-        let named = alone && hit.is_some();
+        let named = job.named;
         self.quality = rank::quality(name, item.hit);
-        let Some(pattern) = content.filter(|_| kind.is_file()) else {
+        let Some(pattern) = shared.plan.content().filter(|_| job.plain) else {
             if named {
                 self.path_line(&item, true);
             }
@@ -378,10 +462,11 @@ impl<'a> Worker<'a> {
             return;
         }
 
+        let loaded = loaded.unwrap_or_else(|| self.load(entry.path(), true));
         let (headed, hits) = if pattern.single() {
-            self.read(pattern.lines(), entry, &item)
+            self.read(pattern.lines(), entry, &item, loaded)
         } else {
-            self.read(pattern, entry, &item)
+            self.read(pattern, entry, &item, loaded)
         };
         match shared.layout {
             Layout::List if hits > 0 => self.path_line(&item, false),
@@ -393,7 +478,13 @@ impl<'a> Worker<'a> {
         }
     }
 
-    fn read<M: Matcher>(&mut self, matcher: &M, entry: &DirEntry, item: &Entry<'_>) -> (bool, u64) {
+    fn read<M: Matcher>(
+        &mut self,
+        matcher: &M,
+        entry: &DirEntry,
+        item: &Entry<'_>,
+        loaded: io::Result<Loaded>,
+    ) -> (bool, u64) {
         let shared = self.shared;
         let start = self.out.len();
         let mut sink = Lines {
@@ -408,7 +499,7 @@ impl<'a> Worker<'a> {
             first: None,
             binary: false,
         };
-        let result = match load(entry.path(), &mut self.loaded) {
+        let result = match loaded {
             Ok(Loaded::Text(length)) => {
                 self.searcher
                     .search_slice(matcher, &self.loaded[..length], &mut sink)
@@ -536,6 +627,9 @@ impl<'a> Worker<'a> {
 
 impl Drop for Worker<'_> {
     fn drop(&mut self) {
+        while !self.waiting.is_empty() && !self.shared.budget.stopped() {
+            self.next();
+        }
         self.flush();
         if !self.seen.is_empty()
             && let Ok(mut seen) = self.shared.seen.lock()
@@ -559,19 +653,30 @@ enum Loaded {
     Large(File),
 }
 
-fn load(path: &Path, buffer: &mut Vec<u8>) -> io::Result<Loaded> {
-    let mut file = File::open(path)?;
+fn fill(mut file: File, buffer: &mut Vec<u8>, mut patient: bool) -> io::Result<Loaded> {
     if buffer.is_empty() {
         buffer.resize(WHOLE, 0);
     }
     let mut length = 0;
     let mut wide = false;
     while length < buffer.len() {
-        let read = match file.read(&mut buffer[length..]) {
+        let rest = &mut buffer[length..];
+        let read = if patient {
+            file.read(rest)
+        } else {
+            glance(&file, rest)
+        };
+        let read = match read {
             Ok(0) => return Ok(Loaded::Text(length)),
             Ok(read) => read,
             Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-            Err(error) => return Err(error),
+            Err(error) if patient || error.kind() == io::ErrorKind::WouldBlock => {
+                return Err(error);
+            }
+            Err(_) => {
+                patient = true;
+                continue;
+            }
         };
         if length == 0 {
             wide = MARKS.iter().any(|mark| buffer[..read].starts_with(mark));
@@ -582,6 +687,34 @@ fn load(path: &Path, buffer: &mut Vec<u8>) -> io::Result<Loaded> {
         length += read;
     }
     Ok(Loaded::Large(file))
+}
+
+#[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
+fn glance(file: &File, buffer: &mut [u8]) -> io::Result<usize> {
+    use std::os::fd::AsRawFd;
+
+    const EARLY: libc::off_t = 1 << 20;
+    let part = libc::iovec {
+        iov_base: buffer.as_mut_ptr().cast(),
+        iov_len: buffer.len(),
+    };
+    // RWF_NOWAIT returns EAGAIN when the data is not in the page cache yet
+    let read = unsafe { libc::preadv2(file.as_raw_fd(), &part, 1, -1, libc::RWF_NOWAIT) };
+    if read >= 0 {
+        return Ok(read as usize);
+    }
+    let error = io::Error::last_os_error();
+    if error.kind() == io::ErrorKind::WouldBlock {
+        unsafe {
+            libc::posix_fadvise(file.as_raw_fd(), 0, EARLY, libc::POSIX_FADV_WILLNEED);
+        }
+    }
+    Err(error)
+}
+
+#[cfg(not(all(target_os = "linux", any(target_env = "gnu", target_env = "musl"))))]
+fn glance(_: &File, _: &mut [u8]) -> io::Result<usize> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 fn display(path: &Path) -> &[u8] {
@@ -664,7 +797,7 @@ fn walker(query: &Query) -> WalkBuilder {
         .parents(!ignored)
         .follow_links(query.walk.follow)
         .max_depth(query.walk.depth)
-        .threads(query.walk.threads);
+        .threads(threads(query));
     if hidden && !query.walk.all {
         builder.filter_entry(|entry| entry.file_name() != ".git");
     }
@@ -674,6 +807,55 @@ fn walker(query: &Query) -> WalkBuilder {
         builder.overrides(excluded);
     }
     builder
+}
+
+fn threads(query: &Query) -> usize {
+    match query.walk.threads {
+        0 => std::thread::available_parallelism().map_or(1, |cores| cores.get().min(WORKERS)),
+        chosen => chosen,
+    }
+}
+
+fn few(builder: &WalkBuilder) -> Option<Vec<Found>> {
+    let started = Instant::now();
+    let mut found = Vec::new();
+    for result in builder.build() {
+        if found.len() == FEW || started.elapsed() > PATIENCE {
+            return None;
+        }
+        found.push(result);
+    }
+    Some(found)
+}
+
+fn handful(shared: &Shared, found: Vec<Found>, threads: usize) {
+    let started = Instant::now();
+    let mut found = found.into_iter();
+    {
+        let mut worker = Worker::new(shared, AHEAD);
+        for result in found.by_ref() {
+            if matches!(worker.visit(result), WalkState::Quit) {
+                return;
+            }
+            if started.elapsed() > PATIENCE {
+                break;
+            }
+        }
+    }
+    let crew = threads.min(found.len());
+    let queue = Mutex::new(found);
+    std::thread::scope(|scope| {
+        for _ in 0..crew {
+            scope.spawn(|| {
+                let mut worker = Worker::new(shared, AHEAD);
+                while let Some(result) = queue.lock().ok().and_then(|mut queue| queue.next()) {
+                    if matches!(worker.visit(result), WalkState::Quit) {
+                        break;
+                    }
+                }
+            });
+        }
+    });
 }
 
 fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> Outcome {
@@ -730,17 +912,20 @@ fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> 
     let mut builder = walker(query);
     if query.walk.sort && !gather {
         builder.sort_by_file_name(|left, right| left.cmp(right));
-        let mut worker = Worker::new(&shared);
+        let mut worker = Worker::new(&shared, 0);
         for result in builder.build() {
             if matches!(worker.visit(result), WalkState::Quit) {
                 break;
             }
         }
     } else {
-        builder.build_parallel().run(|| {
-            let mut worker = Worker::new(&shared);
-            Box::new(move |result| worker.visit(result))
-        });
+        match few(&builder) {
+            Some(found) => handful(&shared, found, threads(query)),
+            None => builder.build_parallel().run(|| {
+                let mut worker = Worker::new(&shared, AHEAD);
+                Box::new(move |result| worker.visit(result))
+            }),
+        }
     }
 
     Outcome {

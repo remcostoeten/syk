@@ -34,7 +34,7 @@ const AHEAD: usize = 32;
 const FEW: usize = 128;
 const PATIENCE: Duration = Duration::from_millis(2);
 const WORKERS: usize = 12;
-const PIECE: u32 = 2048;
+const PIECE: u32 = 4096;
 const BIG: u64 = 20_000;
 
 #[allow(clippy::large_enum_variant)]
@@ -142,6 +142,20 @@ impl Shared {
             end: self.end,
             base: self.base.as_deref(),
         }
+    }
+
+    fn gate(&self) -> Option<&Pattern> {
+        let pattern = match &self.plan {
+            Compiled::Union {
+                pattern: Some(pattern),
+                targets,
+            } if !targets.content => pattern,
+            Compiled::Narrow {
+                name: Some(name), ..
+            } => name,
+            _ => return None,
+        };
+        (!self.gather && pattern.siftable()).then_some(pattern)
     }
 
     fn fail(&self, message: impl std::fmt::Display) {
@@ -321,6 +335,10 @@ impl<'a> Worker<'a> {
             Visit::Entry(entry) => !matches!(self.see(&entry), WalkState::Quit),
             Visit::Failure(text) => {
                 self.shared.fail(text);
+                true
+            }
+            Visit::Passed(entries) => {
+                self.tally.entries += entries;
                 true
             }
         }
@@ -1049,12 +1067,16 @@ fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
         }
     }
     let excluded = excludes(query).ok().filter(|excluded| !excluded.is_empty());
+    let gate = shared
+        .gate()
+        .map(|pattern| move |names: &[u8], at: usize| pattern.next_name(names, at));
     let scan = Scan {
         index,
         root: query.roots[0].as_os_str().as_bytes(),
         depth: query.walk.depth,
         state: &state,
         excluded: excluded.as_ref(),
+        gate: gate.as_ref().map(|gate| gate as &index::Gate<'_>),
     };
     let total = index.entries();
     if sorted {
@@ -1074,10 +1096,7 @@ fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
                         break;
                     }
                     let piece = from..from.saturating_add(PIECE).min(total);
-                    scan.run(piece, &mut |visit| {
-                        going = worker.take(visit);
-                        going
-                    });
+                    going = scan.run(piece, &mut |visit| worker.take(visit));
                 }
             });
         }

@@ -90,7 +90,7 @@ pub enum Case {
     Sensitive,
 }
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 pub struct Matching {
     pub case: Case,
     pub literal: bool,

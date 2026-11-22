@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use grep_matcher::{LineTerminator, Match, Matcher, NoCaptures, NoError};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 
@@ -15,6 +17,8 @@ pub struct Term {
     pub reading: Reading,
     lines: RegexMatcher,
     names: Option<RegexMatcher>,
+    matching: Matching,
+    listed: OnceLock<Option<RegexMatcher>>,
 }
 
 impl Term {
@@ -23,22 +27,26 @@ impl Term {
             Ok(Term {
                 source: source.to_string(),
                 reading,
-                lines: build(source, matching, true).map_err(|error| error.to_string())?,
+                lines: build(source, matching, true, false).map_err(|error| error.to_string())?,
                 names,
+                matching: *matching,
+                listed: OnceLock::new(),
             })
         };
         if matching.literal {
             return plain(Reading::Text, None);
         }
-        match build(source, matching, false) {
+        match build(source, matching, false, false) {
             Ok(lines) => Ok(Term {
                 source: source.to_string(),
                 reading: Reading::Regex,
                 lines,
                 names: None,
+                matching: *matching,
+                listed: OnceLock::new(),
             }),
             Err(_) if source.contains(['*', '?']) => {
-                let names = build(&glob(source), matching, false).ok();
+                let names = build(&glob(source), matching, false, false).ok();
                 let reading = if names.is_some() {
                     Reading::Glob
                 } else {
@@ -48,6 +56,19 @@ impl Term {
             }
             Err(_) => plain(Reading::Text, None),
         }
+    }
+
+    fn listed(&self) -> Option<&RegexMatcher> {
+        self.listed
+            .get_or_init(|| {
+                let matcher = match (&self.names, self.reading) {
+                    (Some(_), _) => build(&glob(&self.source), &self.matching, false, true),
+                    (None, Reading::Regex) => build(&self.source, &self.matching, false, true),
+                    (None, _) => build(&self.source, &self.matching, true, true),
+                };
+                matcher.ok()
+            })
+            .as_ref()
     }
 
     fn find(&self, name: &[u8]) -> Option<(usize, usize)> {
@@ -93,7 +114,8 @@ impl Pattern {
             .map(|source| Term::compile(source, &fixed))
             .collect::<Result<Vec<Term>, String>>()?;
         let either: Vec<String> = terms.iter().map(Term::either).collect();
-        let any = build(&either.join("|"), &fixed, false).map_err(|error| error.to_string())?;
+        let any =
+            build(&either.join("|"), &fixed, false, false).map_err(|error| error.to_string())?;
         let rarest = (0..terms.len())
             .max_by_key(|index| terms[*index].source.len())
             .unwrap_or(0);
@@ -126,6 +148,38 @@ impl Pattern {
         rest.iter()
             .all(|term| term.find(name).is_some())
             .then_some(found)
+    }
+
+    pub fn siftable(&self) -> bool {
+        // \A, \z and switched-off flags tie a pattern to the start or end of the whole text
+        self.terms[self.rarest].listed().is_some()
+            && self.terms.iter().all(|term| {
+                let source = term.source.as_str();
+                let flags = source
+                    .match_indices("(?")
+                    .any(|(at, _)| !source[at + 2..].starts_with(':'));
+                term.reading != Reading::Regex
+                    || !(flags
+                        || ["\\A", "\\z", "\\Z"]
+                            .iter()
+                            .any(|anchor| source.contains(anchor)))
+            })
+    }
+
+    pub fn next_name(&self, names: &[u8], mut at: usize) -> Option<(usize, usize)> {
+        let matcher = self.terms[self.rarest].listed()?;
+        while at <= names.len() {
+            let found = matcher.find_at(names, at).ok()??;
+            let start =
+                memchr::memrchr(b'\n', &names[..found.start()]).map_or(0, |index| index + 1);
+            let end = memchr::memchr(b'\n', &names[found.end()..])
+                .map_or(names.len(), |index| found.end() + index);
+            if self.find(&names[start..end]).is_some() {
+                return Some((start, end));
+            }
+            at = end + 1;
+        }
+        None
     }
 
     pub fn lines(&self) -> &RegexMatcher {
@@ -186,6 +240,7 @@ fn build(
     source: &str,
     matching: &Matching,
     literal: bool,
+    listed: bool,
 ) -> Result<RegexMatcher, grep_regex::Error> {
     let mut builder = RegexMatcherBuilder::new();
     match matching.case {
@@ -196,6 +251,7 @@ fn build(
     builder
         .word(matching.word)
         .fixed_strings(literal)
+        .multi_line(listed)
         .line_terminator(Some(b'\n'))
         .build(source)
 }

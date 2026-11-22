@@ -1,9 +1,9 @@
 use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, File, FileType};
+use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,6 +17,7 @@ use ignore::{DirEntry, WalkBuilder, WalkState};
 
 use crate::act;
 use crate::group::{self, Group, Skip, Skips, ends_with};
+use crate::item::{Form, Item};
 use crate::load::{self, Loaded};
 use crate::output::{Budget, Entry, Layout, Lines, Style, write_count, write_entry};
 use crate::pattern::Pattern;
@@ -79,6 +80,7 @@ struct Shared {
     plan: Compiled,
     filters: Filters,
     unread: Skips,
+    follow: bool,
     folders: bool,
     stat: bool,
     cutoffs: Vec<(bool, SystemTime)>,
@@ -175,7 +177,9 @@ struct Job {
 }
 
 struct Waiting {
-    entry: DirEntry,
+    path: PathBuf,
+    depth: usize,
+    form: Form,
     job: Job,
 }
 
@@ -244,33 +248,51 @@ impl<'a> Worker<'a> {
         let Some(kind) = entry.file_type() else {
             return WalkState::Continue;
         };
+        self.see(&Item {
+            path: entry.path(),
+            depth: entry.depth(),
+            form: Form::of(kind),
+            follow: self.shared.follow,
+        })
+    }
+
+    fn see(&mut self, entry: &Item<'_>) -> WalkState {
+        if self.shared.budget.stopped() {
+            return WalkState::Quit;
+        }
+        let kind = entry.form;
         self.tally.entries += 1;
         if kind.is_dir() {
             self.quality = 0.0;
             self.line = None;
             if entry.depth() > 0 {
-                self.folder(&entry);
+                self.folder(entry);
             }
-            self.close(&entry);
+            self.close(entry);
             return WalkState::Continue;
         }
-        let Some(job) = self.wanted(&entry, kind) else {
-            self.close(&entry);
+        let Some(job) = self.wanted(entry, kind) else {
+            self.close(entry);
             return WalkState::Continue;
         };
         if !self.reads(job) {
-            self.handle(&entry, job, None);
+            self.handle(entry, job, None);
             return WalkState::Continue;
         }
         let patient = self.ahead == 0;
         match self.load(entry.path(), patient) {
             Err(error) if !patient && error.kind() == io::ErrorKind::WouldBlock => {
-                self.waiting.push_back(Waiting { entry, job });
+                self.waiting.push_back(Waiting {
+                    path: entry.path().to_path_buf(),
+                    depth: entry.depth(),
+                    form: entry.form,
+                    job,
+                });
                 if self.waiting.len() > self.ahead {
                     self.next();
                 }
             }
-            loaded => self.handle(&entry, job, Some(loaded)),
+            loaded => self.handle(entry, job, Some(loaded)),
         }
         WalkState::Continue
     }
@@ -291,18 +313,24 @@ impl<'a> Worker<'a> {
         let Some(waiting) = self.waiting.pop_front() else {
             return;
         };
-        let loaded = self.load(waiting.entry.path(), true);
-        self.handle(&waiting.entry, waiting.job, Some(loaded));
+        let loaded = self.load(&waiting.path, true);
+        let entry = Item {
+            path: &waiting.path,
+            depth: waiting.depth,
+            form: waiting.form,
+            follow: self.shared.follow,
+        };
+        self.handle(&entry, waiting.job, Some(loaded));
     }
 
-    fn handle(&mut self, entry: &DirEntry, job: Job, loaded: Option<io::Result<Loaded>>) {
+    fn handle(&mut self, entry: &Item<'_>, job: Job, loaded: Option<io::Result<Loaded>>) {
         self.quality = 0.0;
         self.line = None;
         self.file(entry, job, loaded);
         self.close(entry);
     }
 
-    fn close(&mut self, entry: &DirEntry) {
+    fn close(&mut self, entry: &Item<'_>) {
         if self.shared.keep {
             self.keep(entry);
         } else {
@@ -310,7 +338,7 @@ impl<'a> Worker<'a> {
         }
     }
 
-    fn keep(&mut self, entry: &DirEntry) {
+    fn keep(&mut self, entry: &Item<'_>) {
         if self.out.is_empty() {
             return;
         }
@@ -327,7 +355,7 @@ impl<'a> Worker<'a> {
         });
     }
 
-    fn folder(&mut self, entry: &DirEntry) {
+    fn folder(&mut self, entry: &Item<'_>) {
         let shared = self.shared;
         if !shared.folders {
             return;
@@ -378,7 +406,7 @@ impl<'a> Worker<'a> {
         );
     }
 
-    fn wanted(&mut self, entry: &DirEntry, kind: FileType) -> Option<Job> {
+    fn wanted(&mut self, entry: &Item<'_>, kind: Form) -> Option<Job> {
         let shared = self.shared;
         match shared.filters.kind {
             Some(Kind::Dir) => return None,
@@ -437,7 +465,7 @@ impl<'a> Worker<'a> {
         (job.named || job.muted || (job.plain && shared.plan.content().is_some())).then_some(job)
     }
 
-    fn unread(&self, entry: &DirEntry) -> bool {
+    fn unread(&self, entry: &Item<'_>) -> bool {
         entry
             .path()
             .as_os_str()
@@ -447,7 +475,7 @@ impl<'a> Worker<'a> {
             .any(|part| self.shared.unread.matches(part))
     }
 
-    fn weigh(&mut self, entry: &DirEntry) {
+    fn weigh(&mut self, entry: &Item<'_>) {
         let Some(pattern) = self.shared.plan.content() else {
             return;
         };
@@ -468,7 +496,7 @@ impl<'a> Worker<'a> {
         }
     }
 
-    fn file(&mut self, entry: &DirEntry, job: Job, loaded: Option<io::Result<Loaded>>) {
+    fn file(&mut self, entry: &Item<'_>, job: Job, loaded: Option<io::Result<Loaded>>) {
         let shared = self.shared;
         let name = entry.file_name().as_bytes();
         let path = display(entry.path());
@@ -532,7 +560,7 @@ impl<'a> Worker<'a> {
     fn read<M: Matcher>(
         &mut self,
         matcher: &M,
-        entry: &DirEntry,
+        entry: &Item<'_>,
         item: &Entry<'_>,
         loaded: io::Result<Loaded>,
     ) -> (bool, u64) {
@@ -604,7 +632,7 @@ impl<'a> Worker<'a> {
         }
     }
 
-    fn in_scope(&mut self, entry: &DirEntry, dir: &Pattern) -> bool {
+    fn in_scope(&mut self, entry: &Item<'_>, dir: &Pattern) -> bool {
         let Some(parent) = entry.path().parent() else {
             return false;
         };
@@ -623,7 +651,7 @@ impl<'a> Worker<'a> {
         inside
     }
 
-    fn passes_stat(&self, entry: &DirEntry) -> bool {
+    fn passes_stat(&self, entry: &Item<'_>) -> bool {
         let Ok(metadata) = entry.metadata() else {
             return false;
         };
@@ -901,6 +929,7 @@ fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> 
         tally: Mutex::new(Tally::default()),
         filters: query.filters.clone(),
         unread: skips(query, Skip::Contents),
+        follow: query.walk.follow,
     };
 
     let mut builder = walker(query);

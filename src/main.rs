@@ -6,6 +6,7 @@ mod filter;
 mod flags;
 mod group;
 mod help;
+mod item;
 mod load;
 mod output;
 mod pager;

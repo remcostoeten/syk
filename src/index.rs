@@ -1061,10 +1061,18 @@ fn prune(store: &Path) {
     let Ok(listing) = fs::read_dir(store) else {
         return;
     };
-    let mut kept: Vec<(SystemTime, PathBuf)> = listing
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|kind| kind == "idx"))
+    let paths: Vec<PathBuf> = listing.flatten().map(|entry| entry.path()).collect();
+    let kind = |path: &Path, wanted: &str| path.extension().is_some_and(|kind| kind == wanted);
+    for path in &paths {
+        let lapsed = (kind(path, "no") && !younger(path, REFUSED))
+            || ((kind(path, "lock") || kind(path, "part")) && !younger(path, LOCKED));
+        if lapsed {
+            let _ = fs::remove_file(path);
+        }
+    }
+    let mut kept: Vec<(SystemTime, PathBuf)> = paths
+        .into_iter()
+        .filter(|path| kind(path, "idx"))
         .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
         .collect();
     kept.sort();

@@ -1,35 +1,114 @@
-import os, random, shutil, subprocess, sys, time
+#!/usr/bin/env python3
+import argparse
+import os
+import random
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
 from pathlib import Path
 
-SYK = sys.argv[1]
-BASE = Path(sys.argv[2])
-SEED = int(sys.argv[3])
-TREES = int(sys.argv[4])
-ROUNDS = int(sys.argv[5])
-random.seed(SEED)
-ENV = dict(os.environ, SYK_CONFIG="/nonexistent", XDG_CACHE_HOME=str(BASE / "cache"), NO_COLOR="1")
-NAMES = ["alpha", "beta", "gamma", "delta", "node_modules", "build", "notes.txt", "main.rs", "data.log",
-         "Cargo.lock", "x.pyc", "lib", "src", "docs", "a b", "needle.md", "deep", "tmp", ".hidden", "zeta.rs"]
-used = {"index": 0, "live": 0, "reread": 0}
+ABOUT = "Change random trees and check that syk finds the same with an index as without one."
+METHOD = (
+    "Every tree gets an index from syk -y. A round then makes a few random changes: files "
+    "and folders are made, removed, renamed and swapped, ignore files are written and "
+    "removed, and folders lose and regain their permissions. After every round each query "
+    "runs twice, once with the index and once with -Y, and the results, the errors and "
+    "the exit status have to be the same. The exit status is 1 at the first difference. "
+    "Trees are made in a temporary folder, which has to be on a file system that syk "
+    "builds an index for."
+)
+NAMES = [
+    "alpha",
+    "beta",
+    "gamma",
+    "delta",
+    "node_modules",
+    "build",
+    "notes.txt",
+    "main.rs",
+    "data.log",
+    "Cargo.lock",
+    "x.pyc",
+    "lib",
+    "src",
+    "docs",
+    "a b",
+    "needle.md",
+    "deep",
+    "tmp",
+    ".hidden",
+    "zeta.rs",
+]
+TEXTS = ["needle here\n", "nothing\n", "a needle\nand more\n"]
+RULES = ["*.log\n", "build\n", "docs/\n", "!notes.txt\n*.txt\n", "/lib\n", "deep\n", "tmp/\n*.rs\n"]
+CHANGES = [
+    "file",
+    "file",
+    "file",
+    "unlink",
+    "unlink",
+    "mkdir",
+    "rmtree",
+    "rename",
+    "rename",
+    "swap",
+    "ignore",
+    "unignore",
+    "chmod",
+    "tree",
+    "symlink",
+    "touch",
+]
+QUERIES = [
+    ["-n"],
+    ["-d"],
+    ["-c", "needle", "-l"],
+    ["-n", "a"],
+    ["-n", "-E", "docs"],
+    ["-n", "-D", "2"],
+    ["needle"],
+    ["-n", "rs", "-c", "needle"],
+    ["-n", "-g", "build"],
+    ["-t", "file", ".rs"],
+    ["-n", "-o"],
+    ["-n", "^[a-d]"],
+    ["-n", "s$", "-o"],
+    ["-d", "a", "-E", "lib"],
+    ["-n", "e", "-D", "3"],
+    ["-n", "*.rs"],
+    ["-d", "t", "-n", "a"],
+    ["-n", "Cargo"],
+    ["-n", "a", "b"],
+]
+SETTLE = 2.1
+# The walkers word a failed folder differently, with or without this prefix
+WORDING = re.compile(rb"IO error for operation on [^:]*: ")
 
 
-def run(root, args, extra=()):
-    done = subprocess.run([SYK, *args, *extra, "-T", "-p"], cwd=root, env=ENV, stdin=subprocess.DEVNULL,
-                          capture_output=True)
+def search(syk, env, root, query):
+    done = subprocess.run(
+        [syk, *query, "-T", "-p"],
+        cwd=root,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+    )
     lines = done.stdout.split(b"\n")
-    if "-o" not in args:
+    if "-o" not in query:
         lines = sorted(lines)
-    import re
-    errors = sorted(re.sub(rb"IO error for operation on [^:]*: ", b"", line) for line in done.stderr.split(b"\n")
-                    if line and b"matched. Read" not in line)
-    stats = [line for line in done.stderr.split(b"\n") if b"matched. Read" in line]
-    return lines, errors, done.returncode, stats[0] if stats else b""
+    notes = [line for line in done.stderr.split(b"\n") if line]
+    totals = [line for line in notes if b"matched. Read" in line]
+    errors = sorted(WORDING.sub(b"", line) for line in notes if line not in totals)
+    return (lines, errors, done.returncode), totals[0] if totals else b""
 
 
 def folders(root):
     found = [root]
-    for path, dirs, _ in os.walk(root):
-        found.extend(Path(path) / name for name in dirs if not (Path(path) / name).is_symlink())
+    for path, names, _ in os.walk(root):
+        found.extend(Path(path) / name for name in names if not (Path(path) / name).is_symlink())
     return found
 
 
@@ -38,22 +117,19 @@ def files(root):
 
 
 def write(path):
-    path.write_text(random.choice(["needle here\n", "nothing\n", "a needle\nand more\n"]))
+    path.write_text(random.choice(TEXTS))
 
 
-def mutate(root):
-    kind = random.choice(["file", "file", "file", "unlink", "unlink", "mkdir", "rmtree", "rename", "rename",
-                          "swap", "ignore", "unignore", "chmod", "tree", "symlink", "touch"])
+def change(root):
+    kind = random.choice(CHANGES)
     where = random.choice(folders(root))
-    name = random.choice(NAMES)
-    target = where / name
+    target = where / random.choice(NAMES)
+    below = [path for path in folders(root) if path != root]
     try:
         if kind == "file" and not target.exists():
             write(target)
-        elif kind == "unlink":
-            found = files(root)
-            if found:
-                random.choice(found).unlink()
+        elif kind == "unlink" and files(root):
+            random.choice(files(root)).unlink()
         elif kind == "mkdir" and not target.exists():
             target.mkdir()
         elif kind == "tree" and not target.exists():
@@ -64,101 +140,124 @@ def mutate(root):
                 else:
                     (target / inner).mkdir()
                     write(target / inner / random.choice(NAMES))
-        elif kind == "rmtree":
-            found = [path for path in folders(root) if path != root]
-            if found:
-                shutil.rmtree(random.choice(found), ignore_errors=True)
-        elif kind == "rename":
-            found = [path for path in folders(root) + files(root) if path != root]
-            if found:
-                source = random.choice(found)
-                if not target.exists() and source not in target.parents and source.exists():
-                    source.rename(target)
-        elif kind == "swap":
-            found = files(root)
-            if found:
-                chosen = random.choice(found)
-                chosen.unlink()
-                chosen.mkdir()
-                write(chosen / "inner.txt")
+        elif kind == "rmtree" and below:
+            shutil.rmtree(random.choice(below), ignore_errors=True)
+        elif kind == "rename" and below + files(root):
+            source = random.choice(below + files(root))
+            if not target.exists() and source not in target.parents and source.exists():
+                source.rename(target)
+        elif kind == "swap" and files(root):
+            chosen = random.choice(files(root))
+            chosen.unlink()
+            chosen.mkdir()
+            write(chosen / "inner.txt")
         elif kind == "ignore":
-            (where / random.choice([".gitignore", ".ignore"])).write_text(
-                random.choice(["*.log\n", "build\n", "docs/\n", "!notes.txt\n*.txt\n", "/lib\n", "deep\n", "tmp/\n*.rs\n"]))
+            (where / random.choice([".gitignore", ".ignore"])).write_text(random.choice(RULES))
         elif kind == "unignore":
-            found = [path for path in files(root) if path.name in (".gitignore", ".ignore")]
-            if found:
-                random.choice(found).unlink()
-        elif kind == "chmod":
-            found = [path for path in folders(root) if path != root]
-            if found:
-                chosen = random.choice(found)
-                chosen.chmod(0o000 if random.random() < 0.5 else 0o755)
+            rules = [path for path in files(root) if path.name in (".gitignore", ".ignore")]
+            if rules:
+                random.choice(rules).unlink()
+        elif kind == "chmod" and below:
+            random.choice(below).chmod(random.choice([0o000, 0o755]))
         elif kind == "symlink" and not target.exists():
             target.symlink_to(random.choice(folders(root)))
-        elif kind == "touch":
-            found = files(root)
-            if found:
-                write(random.choice(found))
+        elif kind == "touch" and files(root):
+            write(random.choice(files(root)))
     except (OSError, shutil.Error):
         pass
     return kind
 
 
 def restore(root):
-    for path, dirs, _ in os.walk(root):
-        for name in dirs:
+    for path, names, _ in os.walk(root):
+        for name in names:
             try:
                 (Path(path) / name).chmod(0o755)
             except OSError:
                 pass
 
 
-QUERIES = [["-n"], ["-d"], ["-c", "needle", "-l"], ["-n", "a"], ["-n", "-E", "docs"], ["-n", "-D", "2"],
-           ["needle"], ["-n", "rs", "-c", "needle"], ["-n", "-g", "build"], ["-t", "file", ".rs"], ["-n", "-o"],
-           ["-n", "^[a-d]"], ["-n", "s$", "-o"], ["-d", "a", "-E", "lib"], ["-n", "e", "-D", "3"], ["-n", "*.rs"],
-           ["-d", "t", "-n", "a"], ["-n", "Cargo"], ["-n", "a", "b"]]
-
-
-def check(root, label):
+def compare(syk, env, root, label, used):
     for query in QUERIES:
-        indexed = run(root, query)
-        live = run(root, query, ["-Y"])
-        if b"from the index" in indexed[3]:
+        indexed, totals = search(syk, env, root, query)
+        walked, _ = search(syk, env, root, query + ["-Y"])
+        if b"from the index" in totals:
             used["index"] += 1
-            used["reread"] += b"read again" in indexed[3]
+            used["reread"] += b"read again" in totals
         else:
-            used["live"] += 1
-        if indexed[:3] != live[:3]:
-            print(f"MISMATCH seed {SEED} {label} query {query} in {root}")
-            print("  only index:", [line for line in indexed[0] if line not in live[0]][:10])
-            print("  only live: ", [line for line in live[0] if line not in indexed[0]][:10])
-            print("  errors index:", indexed[1][:4], "live:", live[1][:4], "codes", indexed[2], live[2])
-            print("  stats:", indexed[3])
-            sys.exit(1)
+            used["walk"] += 1
+        if indexed != walked:
+            print(f"DIFFERENT {label}, query {' '.join(query)}, in {root}")
+            print("  only with the index:", [line for line in indexed[0] if line not in walked[0]][:10])
+            print("  only with a walk:   ", [line for line in walked[0] if line not in indexed[0]][:10])
+            print("  errors:", indexed[1][:4], "against", walked[1][:4])
+            print("  exit status:", indexed[2], "against", walked[2])
+            return False
+    return True
 
 
-for tree in range(TREES):
-    root = BASE / f"tree{tree}"
-    if root.exists():
-        restore(root)
-        shutil.rmtree(root)
+def trial(syk, env, root, rounds, used):
     root.mkdir(parents=True)
     if random.random() < 0.5:
         (root / ".git").mkdir()
     for _ in range(random.randint(10, 60)):
-        mutate(root)
+        change(root)
     if random.random() < 0.7:
-        time.sleep(2.1)
-    built = subprocess.run([SYK, "-y"], cwd=root, env=ENV, capture_output=True, stdin=subprocess.DEVNULL)
+        time.sleep(SETTLE)
+    build = [syk, "-y"]
+    built = subprocess.run(build, cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True)
     if built.returncode != 0:
-        print("build failed", built.stderr)
-        sys.exit(1)
-    check(root, f"tree {tree} fresh")
-    for round in range(ROUNDS):
-        kinds = [mutate(root) for _ in range(random.randint(1, 6))]
-        check(root, f"tree {tree} round {round} after {kinds}")
+        print(f"no index for {root}: {built.stderr.decode().strip()}")
+        return False
+    if not compare(syk, env, root, "a new tree", used):
+        return False
+    for round in range(rounds):
+        kinds = [change(root) for _ in range(random.randint(1, 6))]
+        if not compare(syk, env, root, f"round {round} after {', '.join(kinds)}", used):
+            return False
         if random.random() < 0.15:
-            subprocess.run([SYK, "-y"], cwd=root, env=ENV, capture_output=True, stdin=subprocess.DEVNULL)
-            check(root, f"tree {tree} round {round} rebuilt")
-    restore(root)
-print(f"seed {SEED}: ok, {used}")
+            subprocess.run(build, cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True)
+            if not compare(syk, env, root, f"round {round} with a new index", used):
+                return False
+    return True
+
+
+def main():
+    built = Path(__file__).resolve().parent.parent / "target" / "release" / "syk"
+    parser = argparse.ArgumentParser(description=ABOUT, epilog=METHOD)
+    parser.add_argument("syk", nargs="?", default=str(built) if built.exists() else "syk")
+    parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--trees", type=int, default=4)
+    parser.add_argument("--rounds", type=int, default=10)
+    args = parser.parse_args()
+
+    syk = shutil.which(args.syk)
+    if not syk:
+        sys.exit(f"fuzz: {args.syk} is not an executable.")
+    random.seed(args.seed)
+    used = {"index": 0, "reread": 0, "walk": 0}
+    base = Path(tempfile.mkdtemp(prefix="syk-fuzz-"))
+    env = dict(
+        os.environ,
+        SYK_CONFIG="/nonexistent",
+        XDG_CACHE_HOME=str(base / "cache"),
+        NO_COLOR="1",
+    )
+    roots = [base / f"tree{tree}" for tree in range(args.trees)]
+    try:
+        same = all(trial(syk, env, root, args.rounds, used) for root in roots)
+    finally:
+        for root in roots:
+            restore(root)
+    print(
+        f"seed {args.seed}: {'the same' if same else 'DIFFERENT'}. "
+        f"{used['index']} searches used an index, {used['reread']} of them read changed "
+        f"folders again, and {used['walk']} fell back to a walk."
+    )
+    if not same:
+        sys.exit(f"fuzz: the trees are kept in {base}.")
+    shutil.rmtree(base, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

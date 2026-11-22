@@ -56,12 +56,12 @@ cargo install --git https://github.com/remcostoeten/syk
 Rust 1.88 or newer.
 
 ```bash
-cargo test                             # unit tests and end-to-end tests
-cargo clippy --all-targets             # lints
-scripts/demo.sh --fast                 # run every documented command once
+cargo test                                     # unit tests and end-to-end tests
+cargo clippy --all-targets                     # lints
+scripts/demo.sh --fast                         # run every documented command once
 scripts/bench.py --html docs/benchmarks.html   # time searches next to ripgrep, fd, find and grep
-scripts/fuzz.py target/release/syk     # change random trees and compare the index with a walk
-git config core.hooksPath .githooks    # format on commit, lint on push
+scripts/fuzz.py                                # change random trees and compare the index with a walk
+git config core.hooksPath .githooks            # format on commit, lint on push
 ```
 
 <br/>

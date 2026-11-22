@@ -5,8 +5,8 @@ use std::io::{self, IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use grep_matcher::Matcher;
@@ -17,6 +17,7 @@ use ignore::{DirEntry, WalkBuilder, WalkState};
 
 use crate::act;
 use crate::group::{self, Group, Skip, Skips, ends_with};
+use crate::index::{self, Fresh, Index, Opened, Scan, Visit};
 use crate::item::{Form, Item};
 use crate::load::{self, Loaded};
 use crate::output::{Budget, Entry, Layout, Lines, Style, write_count, write_entry};
@@ -33,6 +34,8 @@ const AHEAD: usize = 32;
 const FEW: usize = 128;
 const PATIENCE: Duration = Duration::from_millis(2);
 const WORKERS: usize = 12;
+const PIECE: u32 = 2048;
+const BIG: u64 = 20_000;
 
 #[allow(clippy::large_enum_variant)]
 pub enum Compiled {
@@ -189,6 +192,21 @@ struct Outcome {
     seen: Seen,
     blocks: Vec<Block>,
     tally: Tally,
+    advice: Advice,
+    reread: Option<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Advice {
+    Leave,
+    Large,
+    Build,
+}
+
+struct Stored {
+    index: Index,
+    dirty: Vec<u32>,
+    fresh: Option<Fresh>,
 }
 
 struct Worker<'a> {
@@ -250,6 +268,7 @@ impl<'a> Worker<'a> {
         };
         self.see(&Item {
             path: entry.path(),
+            name: entry.file_name(),
             depth: entry.depth(),
             form: Form::of(kind),
             follow: self.shared.follow,
@@ -297,6 +316,16 @@ impl<'a> Worker<'a> {
         WalkState::Continue
     }
 
+    fn take(&mut self, visit: Visit<'_>) -> bool {
+        match visit {
+            Visit::Entry(entry) => !matches!(self.see(&entry), WalkState::Quit),
+            Visit::Failure(text) => {
+                self.shared.fail(text);
+                true
+            }
+        }
+    }
+
     fn load(&mut self, path: &Path, patient: bool) -> io::Result<Loaded> {
         load::fill(File::open(path)?, &mut self.loaded, patient)
     }
@@ -316,6 +345,7 @@ impl<'a> Worker<'a> {
         let loaded = self.load(&waiting.path, true);
         let entry = Item {
             path: &waiting.path,
+            name: waiting.path.file_name().unwrap_or(waiting.path.as_os_str()),
             depth: waiting.depth,
             form: waiting.form,
             follow: self.shared.follow,
@@ -879,6 +909,181 @@ fn handful(shared: &Shared, found: Vec<Found>, threads: usize) {
     });
 }
 
+fn print(query: &Query) -> String {
+    let whole = query
+        .filters
+        .groups
+        .iter()
+        .filter(|group| group.skip == Skip::Whole);
+    let mut print = String::from("1");
+    for pattern in whole.flat_map(|group| &group.patterns) {
+        print.push('\n');
+        print.push_str(pattern);
+    }
+    print
+}
+
+fn indexable(query: &Query) -> bool {
+    let walk = &query.walk;
+    !(walk.no_index || walk.hidden || walk.no_ignore || walk.all || walk.follow)
+        && query.roots.len() == 1
+}
+
+fn stored(query: &Query, sorted: bool) -> (Option<Stored>, Advice) {
+    if !indexable(query) {
+        return (None, Advice::Leave);
+    }
+    let root = &query.roots[0];
+    let index = match Index::open(root, &print(query)) {
+        Opened::Ready(index) => index,
+        Opened::Stale => return (None, Advice::Build),
+        Opened::Missing => return (None, Advice::Large),
+    };
+    let bytes = root.as_os_str().as_bytes();
+    let dirty = index.stale(bytes, threads(query));
+    let limit = (index.folders() as usize / 16).max(64);
+    if dirty.len() > limit {
+        return (None, Advice::Build);
+    }
+    if dirty.is_empty() {
+        let stored = Stored {
+            index,
+            dirty,
+            fresh: None,
+        };
+        return (Some(stored), Advice::Leave);
+    }
+    if sorted {
+        return (None, Advice::Leave);
+    }
+    match index.fresh(bytes, &dirty) {
+        Some(fresh) => {
+            let stored = Stored {
+                index,
+                dirty,
+                fresh: Some(fresh),
+            };
+            (Some(stored), Advice::Leave)
+        }
+        None => (None, Advice::Build),
+    }
+}
+
+fn refresh(shared: &Shared, query: &Query, fresh: Fresh) -> Vec<u32> {
+    let fresh = Arc::new(fresh);
+    let added: Arc<Mutex<HashSet<Vec<u8>>>> = Arc::default();
+    let seen: Mutex<HashSet<u32>> = Mutex::default();
+    let skips = skips(query, Skip::Whole);
+    let mut builder = walker(query);
+    builder.filter_entry({
+        let (fresh, added) = (fresh.clone(), added.clone());
+        move |entry| {
+            if entry.depth() == 0 {
+                return true;
+            }
+            if skips.matches(entry.file_name().as_bytes()) {
+                return false;
+            }
+            let path = entry.path().as_os_str().as_bytes();
+            let parent = entry
+                .path()
+                .parent()
+                .map_or(&[][..], |parent| parent.as_os_str().as_bytes());
+            fresh.dirty.contains_key(path)
+                || fresh.above.contains(path)
+                || fresh.dirty.contains_key(parent)
+                || added.lock().is_ok_and(|added| added.contains(parent))
+        }
+    });
+    builder.build_parallel().run(|| {
+        let mut worker = Worker::new(shared, AHEAD);
+        let (fresh, added, seen) = (&fresh, &added, &seen);
+        Box::new(move |result| {
+            let entry = match result {
+                Ok(entry) => entry,
+                Err(error) => {
+                    shared.fail(error);
+                    return WalkState::Continue;
+                }
+            };
+            let path = entry.path().as_os_str().as_bytes();
+            if entry.file_type().is_some_and(|kind| kind.is_dir()) {
+                let known = fresh.dirty.contains_key(path) || fresh.above.contains(path);
+                if let Some(slot) = fresh.kids.get(path) {
+                    if let Ok(mut seen) = seen.lock() {
+                        seen.insert(*slot);
+                    }
+                    return match known {
+                        true => WalkState::Continue,
+                        false => WalkState::Skip,
+                    };
+                }
+                if known || entry.depth() == 0 {
+                    return WalkState::Continue;
+                }
+                if let Ok(mut added) = added.lock() {
+                    added.insert(path.to_vec());
+                }
+            }
+            worker.visit(Ok(entry))
+        })
+    });
+    let seen = seen.into_inner().unwrap_or_default();
+    fresh
+        .kids
+        .values()
+        .filter(|slot| !seen.contains(slot))
+        .copied()
+        .collect()
+}
+
+fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
+    let index = &stored.index;
+    let mut state = vec![0u8; index.folders() as usize];
+    for slot in &stored.dirty {
+        state[*slot as usize] |= index::DIRTY;
+    }
+    if let Some(fresh) = stored.fresh {
+        for slot in refresh(shared, query, fresh) {
+            state[slot as usize] |= index::GONE;
+        }
+    }
+    let excluded = excludes(query).ok().filter(|excluded| !excluded.is_empty());
+    let scan = Scan {
+        index,
+        root: query.roots[0].as_os_str().as_bytes(),
+        depth: query.walk.depth,
+        state: &state,
+        excluded: excluded.as_ref(),
+    };
+    let total = index.entries();
+    if sorted {
+        let mut worker = Worker::new(shared, 0);
+        scan.run(0..total, &mut |visit| worker.take(visit));
+        return;
+    }
+    let next = AtomicU32::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..threads(query) {
+            scope.spawn(|| {
+                let mut worker = Worker::new(shared, AHEAD);
+                let mut going = true;
+                while going && !shared.budget.stopped() {
+                    let from = next.fetch_add(PIECE, Ordering::Relaxed);
+                    if from >= total {
+                        break;
+                    }
+                    let piece = from..from.saturating_add(PIECE).min(total);
+                    scan.run(piece, &mut |visit| {
+                        going = worker.take(visit);
+                        going
+                    });
+                }
+            });
+        }
+    });
+}
+
 fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> Outcome {
     let now = SystemTime::now();
     let cutoffs = query
@@ -932,8 +1137,13 @@ fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> 
         follow: query.walk.follow,
     };
 
+    let sorted = query.walk.sort && !gather;
+    let (stored, advice) = stored(query, sorted);
+    let reread = stored.as_ref().map(|stored| stored.dirty.len());
     let mut builder = walker(query);
-    if query.walk.sort && !gather {
+    if let Some(stored) = stored {
+        replay(&shared, query, stored, sorted);
+    } else if sorted {
         builder.sort_by_file_name(|left, right| left.cmp(right));
         let mut worker = Worker::new(&shared, 0);
         for result in builder.build() {
@@ -957,6 +1167,8 @@ fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> 
         seen: shared.seen.into_inner().unwrap_or_default(),
         blocks: shared.blocks.into_inner().unwrap_or_default(),
         tally: shared.tally.into_inner().unwrap_or_default(),
+        advice,
+        reread,
     }
 }
 
@@ -1153,7 +1365,7 @@ fn counted(number: u64, one: &str, many: &str) -> String {
     )
 }
 
-fn totals(tally: Tally, layout: Layout, elapsed: Duration) -> String {
+fn totals(tally: Tally, layout: Layout, elapsed: Duration, reread: Option<usize>) -> String {
     let mut matched: Vec<String> = Vec::new();
     if layout != Layout::List && tally.files > 0 {
         matched.push(format!(
@@ -1174,8 +1386,19 @@ fn totals(tally: Tally, layout: Layout, elapsed: Duration) -> String {
         millis if millis < 1000 => format!("{millis} ms"),
         _ => format!("{:.2} s", elapsed.as_secs_f64()),
     };
+    let source = match reread {
+        None => String::new(),
+        Some(0) => " The names came from the index.".to_string(),
+        Some(folders) => format!(
+            " The names came from the index, and {} read again.",
+            match folders {
+                1 => "1 changed folder was".to_string(),
+                _ => format!("{} changed folders were", grouped(folders as u64)),
+            }
+        ),
+    };
     format!(
-        "{} matched. Read {} of {} in {time}.",
+        "{} matched. Read {} of {} in {time}.{source}",
         matched.join(", "),
         counted(tally.read, "file", "files"),
         counted(tally.entries, "entry", "entries")
@@ -1262,8 +1485,66 @@ fn retry(query: &Query, view: View, keep: bool) -> Option<Outcome> {
     Some(search(query, plan, view, Pass::Again, keep))
 }
 
+fn reindex(mut query: Query, started: Instant) -> ExitCode {
+    let query = &mut query;
+    let plain = indexable(query) && query.filters.excludes.is_empty() && query.walk.depth.is_none();
+    if !plain {
+        eprintln!(
+            "syk: an index holds what a plain search of one folder sees, so -y does not go with -H, -I, -a, -L, -E, -D, -Y or several paths."
+        );
+        return ExitCode::from(2);
+    }
+    let shown = query.roots[0].clone();
+    if let Ok(real) = fs::canonicalize(&shown) {
+        query.roots[0] = real;
+    }
+    let root = &query.roots[0];
+    match index::build(root, &print(query), walker(query)) {
+        Ok(built) => {
+            println!(
+                "Indexed {} in {} below {} in {:.2} s.",
+                counted(built.entries as u64, "entry", "entries"),
+                counted(built.folders as u64, "folder", "folders"),
+                shown.display(),
+                started.elapsed().as_secs_f64()
+            );
+            ExitCode::SUCCESS
+        }
+        Err(reason) => {
+            eprintln!("syk: no index for {}: {reason}.", shown.display());
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn background(query: &Query) {
+    let print = print(query);
+    let Ok(root) = fs::canonicalize(&query.roots[0]) else {
+        return;
+    };
+    if !index::wanted(&root, &print) {
+        return;
+    }
+    let mut flags = vec!["-U".to_string(), "-u".to_string(), group::EVERY.to_string()];
+    let whole = query
+        .filters
+        .groups
+        .iter()
+        .filter(|group| group.skip == Skip::Whole);
+    for group in whole {
+        flags.push("-g".to_string());
+        flags.push(format!("{}={}", group.name, group.patterns.join(",")));
+    }
+    let mut folder = root.into_os_string();
+    folder.push("/");
+    let _ = index::spawn(Path::new(&folder), &flags);
+}
+
 pub fn run(query: Query) -> ExitCode {
     let started = Instant::now();
+    if query.walk.index {
+        return reindex(query, started);
+    }
     stop::watch();
     let plan = match compile(&query) {
         Ok(plan) => plan,
@@ -1282,6 +1563,8 @@ pub fn run(query: Query) -> ExitCode {
     let habits = rank.then(|| std::thread::spawn(Habits::load));
     let mut first = search(&query, plan, view, Pass::First, keep);
     let failed = first.failed;
+    let large = first.advice == Advice::Large && first.tally.entries >= BIG;
+    let build = (large || first.advice == Advice::Build) && !stop::asked();
     let habits = habits.and_then(|loading| loading.join().ok());
     if let Some(habits) = &habits {
         let extra = remembered(&query, habits, &first.blocks, view);
@@ -1297,9 +1580,13 @@ pub fn run(query: Query) -> ExitCode {
     }
     let found = last.found;
     let tally = last.tally;
+    let reread = last.reread;
     let report = || {
         if query.output.stats {
-            eprintln!("syk: {}", totals(tally, view.layout, started.elapsed()));
+            eprintln!(
+                "syk: {}",
+                totals(tally, view.layout, started.elapsed(), reread)
+            );
         }
     };
     let mut ran = true;
@@ -1361,6 +1648,9 @@ pub fn run(query: Query) -> ExitCode {
     if stop::asked() {
         eprintln!("syk: stopped before the search finished.");
         return ExitCode::from(130);
+    }
+    if build {
+        background(&query);
     }
     if !found
         && io::stderr().is_terminal()

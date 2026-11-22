@@ -106,6 +106,8 @@ pub struct Walk {
     pub depth: Option<usize>,
     pub threads: usize,
     pub sort: bool,
+    pub index: bool,
+    pub no_index: bool,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]

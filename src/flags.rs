@@ -19,6 +19,8 @@ pub enum Id {
     All,
     Ignore,
     Unignore,
+    Index,
+    NoIndex,
     Follow,
     List,
     Max,
@@ -163,7 +165,7 @@ fn distance(left: &str, right: &str) -> usize {
     row[right.len()]
 }
 
-pub static FLAGS: [Flag; 48] = [
+pub static FLAGS: [Flag; 50] = [
     Flag {
         id: Id::Name,
         short: 'n',
@@ -841,6 +843,33 @@ pub static FLAGS: [Flag; 48] = [
         detail: "The default is the number of CPU cores, up to twelve. A tree of up to 128 entries starts on one thread, and the others join only when the search takes longer than two milliseconds. -j 1 searches on a single thread.",
         examples: &[("syk foo -j 4", "use four threads")],
         related: &[Id::Sort],
+    },
+    Flag {
+        id: Id::Index,
+        short: 'y',
+        long: "index",
+        aliases: &["reindex"],
+        arity: Arity::Switch,
+        group: Group::Other,
+        summary: "Build the index of a large folder now.",
+        detail: "An index is a list of every name below a folder, kept in ~/.cache/syk. A search that finds one checks each folder in it for changes, which takes one look per folder, and reads only the folders that changed. That makes a search in a very large tree several times faster, and it finds the same as a search without an index.\n\nsyk builds an index by itself, in the background, after a search that walked more than 20,000 entries. -y builds one right away and waits for it. Give the folder as a path: syk -y ~/.\n\nAn index holds what a plain search sees, so a search with -H, -I, -a or -L does not use one, and neither does a search in several paths. It works on local Linux file systems only. The 24 indexes built last are kept.",
+        examples: &[
+            ("syk -y", "index the current folder"),
+            ("syk -y ~/", "index your home folder"),
+        ],
+        related: &[Id::NoIndex, Id::Stats],
+    },
+    Flag {
+        id: Id::NoIndex,
+        short: 'Y',
+        long: "no-index",
+        aliases: &["live"],
+        arity: Arity::Switch,
+        group: Group::Other,
+        summary: "Search without the index.",
+        detail: "Walks the folders as they are now and neither reads nor builds an index. The results are the same either way, so this is for measuring, or for a file system where the times of folders cannot be trusted. Put it in the config file to switch indexes off for good.",
+        examples: &[("syk -n config -Y ~/", "walk the whole tree")],
+        related: &[Id::Index],
     },
     Flag {
         id: Id::NoPager,

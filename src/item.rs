@@ -40,6 +40,7 @@ impl Form {
 #[derive(Clone, Copy)]
 pub struct Item<'a> {
     pub path: &'a Path,
+    pub name: &'a OsStr,
     pub depth: usize,
     pub form: Form,
     pub follow: bool,
@@ -55,7 +56,7 @@ impl Item<'_> {
     }
 
     pub fn file_name(&self) -> &OsStr {
-        self.path.file_name().unwrap_or(self.path.as_os_str())
+        self.name
     }
 
     pub fn metadata(&self) -> io::Result<Metadata> {

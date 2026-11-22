@@ -354,6 +354,7 @@ impl Draft {
                     | Id::Help
                     | Id::NoConfig
                     | Id::Explain
+                    | Id::Index
             )
         {
             return Err(format!(
@@ -410,6 +411,8 @@ impl Draft {
             Id::Context => self.output.context = number(flag, text)?,
             Id::Sort => self.walk.sort = true,
             Id::Threads => self.walk.threads = number(flag, text)?,
+            Id::Index => self.walk.index = true,
+            Id::NoIndex => self.walk.no_index = true,
             Id::Plain => self.output.format = Format::Plain,
             Id::Pretty => self.output.format = Format::Pretty,
             Id::Explain => self.output.explain = true,

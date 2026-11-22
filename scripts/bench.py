@@ -189,7 +189,7 @@ def tree_cases():
             "kind": "paths",
             "tools": {
                 "syk": ["syk", "-U", "-a", "-t", "file", ".py", "-30d"],
-                "fd": FD + ["-u", "-t", "f", "-e", "py", "--changed-within", "30d"],
+                "fd": FD + ["-u", "-t", "f", "-e", "py", "--changed-within", "720h"],
                 "find": ["find", ".", "-type", "f", "-name", "*.py", "-mtime", "-30"],
             },
         },
@@ -200,7 +200,7 @@ def tree_cases():
             "tools": {
                 "syk": ["syk", "-U", "-a", "-t", "file", ".h", "+100kb", "+365d"],
                 "fd": FD
-                + ["-u", "-t", "f", "-e", "h", "-S", "+100ki", "--changed-before", "365d"],
+                + ["-u", "-t", "f", "-e", "h", "-S", "+100ki", "--changed-before", "8760h"],
                 "find": [
                     "find",
                     ".",

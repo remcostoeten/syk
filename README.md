@@ -57,6 +57,7 @@ Rust 1.88 or newer.
 cargo test                             # unit tests and end-to-end tests
 cargo clippy --all-targets             # lints
 scripts/demo.sh --fast                 # run every documented command once
+scripts/bench.py                       # time searches next to ripgrep, fd, find and grep
 git config core.hooksPath .githooks    # format on commit, lint on push
 ```
 

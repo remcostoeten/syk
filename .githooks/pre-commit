@@ -1,0 +1,14 @@
+#!/bin/sh
+staged=$(git diff --cached --name-only --diff-filter=ACM -- '*.rs')
+[ -n "$staged" ] || exit 0
+cargo fmt --check >/dev/null 2>&1 && exit 0
+
+partly=$(echo "$staged" | xargs git diff --name-only --)
+cargo fmt || exit 1
+if [ -n "$partly" ]; then
+    echo "pre-commit: the code is formatted now. These files also had changes that were not staged, so stage what you want and commit again:" >&2
+    echo "$partly" | sed 's/^/  /' >&2
+    exit 1
+fi
+echo "$staged" | xargs git add --
+echo "pre-commit: formatted the staged Rust files." >&2

@@ -26,6 +26,7 @@ A command line tool that searches folder names, file names and file contents in 
 - **Arguments in any order.** `syk foo src/ .ts +10kb -2h` is a pattern, a path, an extension, a minimum size and a maximum age, recognised by their shape.
 - **One target or several.** `-n`, `-d` and `-c` search names, folders or contents only, and `-n route -c auth` prints the lines matching auth in files named route.
 - **Groups of names to skip.** Dependency folders and caches such as `node_modules` and `__pycache__` are skipped without an ignore file, lock files are found by name while their contents stay out of the results, and `-u deps` searches a group again.
+- **An index for very large folders.** After a search that walks more than 20,000 entries, syk keeps a list of the names in `~/.cache/syk`. Later searches check each folder in it for changes and read only the ones that changed. Linux only.
 - **Forgiving patterns.** Lower case matches any case, a pattern that is not a valid regular expression is searched as plain text, and a spelling one edit away is tried when nothing is found.
 - **Ranked results.** A name search in a terminal is ordered by how well the name matches, how recent the file is and what you picked before, with the best result next to your prompt.
 - **Act on a result.** `-b` lets you choose one from a list, `-1` prints the best path, `-O` opens it in your editor at the matching line and `-f` runs a command on the results.
@@ -59,6 +60,7 @@ cargo test                             # unit tests and end-to-end tests
 cargo clippy --all-targets             # lints
 scripts/demo.sh --fast                 # run every documented command once
 scripts/bench.py                       # time searches next to ripgrep, fd, find and grep
+scripts/fuzz.py target/release/syk     # change random trees and compare the index with a walk
 git config core.hooksPath .githooks    # format on commit, lint on push
 ```
 

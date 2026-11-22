@@ -38,7 +38,7 @@ def code_cases():
             "what": "lines matching a regular expression",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-c", REGEX],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-c", REGEX],
                 "rg": RG + [REGEX],
             },
         },
@@ -47,7 +47,7 @@ def code_cases():
             "what": "the same search on a single thread",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-j", "1", "-c", REGEX],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-j", "1", "-c", REGEX],
                 "rg": RG + ["-j", "1", REGEX],
             },
         },
@@ -56,7 +56,7 @@ def code_cases():
             "what": "lines with the word transmute",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-F", "-w", "-c", "transmute"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-F", "-w", "-c", "transmute"],
                 "rg": RG + ["-F", "-w", "transmute"],
             },
         },
@@ -65,7 +65,7 @@ def code_cases():
             "what": "TODO or FIXME in files ending in .rs",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-c", TODO, ".rs"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-c", TODO, ".rs"],
                 "rg": RG + [TODO, "-g", "*.rs"],
             },
         },
@@ -74,7 +74,7 @@ def code_cases():
             "what": "cfg( in files whose name contains build",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-n", "build", "-c", CFG],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-n", "build", "-c", CFG],
                 "rg": RG + [CFG, "-g", "*build*"],
             },
         },
@@ -83,7 +83,7 @@ def code_cases():
             "what": "assert_eq! below folders whose name contains tests",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-d", "tests", "-c", "assert_eq!"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-d", "tests", "-c", "assert_eq!"],
                 "rg": RG + ["assert_eq!", "-g", "**/*tests*/**"],
             },
         },
@@ -92,7 +92,7 @@ def code_cases():
             "what": "lines with both pub and unsafe, in either order",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "pub", "unsafe", "-c"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "pub", "unsafe", "-c"],
                 "rg": RG + [BOTH],
             },
         },
@@ -101,7 +101,7 @@ def code_cases():
             "what": "the number of lines with unsafe, per file",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-c", "unsafe", "-N"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-c", "unsafe", "-N"],
                 "rg": ["rg", "--no-config", "-c", "unsafe"],
             },
         },
@@ -110,7 +110,7 @@ def code_cases():
             "what": "paths of files with async fn",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-c", "async fn", "-l"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-c", "async fn", "-l"],
                 "rg": ["rg", "--no-config", "-l", "async fn"],
             },
         },
@@ -119,7 +119,7 @@ def code_cases():
             "what": "unsafe impl in every file that is not binary",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-a", "-c", "unsafe impl"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-a", "-c", "unsafe impl"],
                 "rg": RG + ["-uu", "unsafe impl"],
                 "grep": ["grep", "-rnI", "unsafe impl", "."],
             },
@@ -129,7 +129,7 @@ def code_cases():
             "what": "serde_json in folder names, file names and lines",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "serde_json"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "serde_json"],
                 "rg + fd": [
                     "sh",
                     "-c",
@@ -148,7 +148,7 @@ def tree_cases():
             "what": "entries whose name contains libssl",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-a", "-s", "-n", "libssl"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-a", "-s", "-n", "libssl"],
                 "fd": FD + ["-u", "-s", "libssl"],
                 "find": ["find", ".", "-name", "*libssl*"],
             },
@@ -158,7 +158,7 @@ def tree_cases():
             "what": "entries whose name starts with lib and has .so in it",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-a", "-s", "-n", LIBRARY],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-a", "-s", "-n", LIBRARY],
                 "fd": FD + ["-u", "-s", LIBRARY],
                 "find": ["find", ".", "-name", "lib*.so*"],
             },
@@ -168,7 +168,7 @@ def tree_cases():
             "what": "folders whose name contains python",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-a", "-s", "-d", "python"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-a", "-s", "-d", "python"],
                 "fd": FD + ["-u", "-s", "-t", "d", "python"],
                 "find": ["find", ".", "-type", "d", "-name", "*python*"],
             },
@@ -178,7 +178,7 @@ def tree_cases():
             "what": ".so files of 1 MiB or more",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-a", "-t", "file", ".so", "+1mb"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-a", "-t", "file", ".so", "+1mb"],
                 "fd": FD + ["-u", "-t", "f", "-e", "so", "-S", "+1mi"],
                 "find": ["find", ".", "-type", "f", "-name", "*.so", "-size", "+1048575c"],
             },
@@ -188,7 +188,7 @@ def tree_cases():
             "what": ".py files changed in the last 30 days",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-a", "-t", "file", ".py", "-30d"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-a", "-t", "file", ".py", "-30d"],
                 "fd": FD + ["-u", "-t", "f", "-e", "py", "--changed-within", "720h"],
                 "find": ["find", ".", "-type", "f", "-name", "*.py", "-mtime", "-30"],
             },
@@ -198,7 +198,7 @@ def tree_cases():
             "what": ".h files of 100 KiB or more, older than a year",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-a", "-t", "file", ".h", "+100kb", "+365d"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-a", "-t", "file", ".h", "+100kb", "+365d"],
                 "fd": FD
                 + ["-u", "-t", "f", "-e", "h", "-S", "+100ki", "--changed-before", "8760h"],
                 "find": [
@@ -225,7 +225,7 @@ def small_cases():
             "what": "lines with fn in the syk sources",
             "kind": "lines",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-c", "fn"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-c", "fn"],
                 "rg": RG + ["fn"],
             },
         },
@@ -234,7 +234,7 @@ def small_cases():
             "what": "entries whose name contains walk",
             "kind": "paths",
             "tools": {
-                "syk": ["syk", "-U", "-u", "all", "-s", "-n", "walk"],
+                "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-n", "walk"],
                 "fd": FD + ["-s", "walk"],
             },
         },

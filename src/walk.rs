@@ -2,6 +2,7 @@ use std::collections::{HashSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Read, Write};
+use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
@@ -34,7 +35,7 @@ const AHEAD: usize = 32;
 const FEW: usize = 128;
 const PATIENCE: Duration = Duration::from_millis(2);
 const WORKERS: usize = 12;
-const PIECE: u32 = 4096;
+const PIECE: Range<u32> = 64..4096;
 const BIG: u64 = 20_000;
 
 #[allow(clippy::large_enum_variant)]
@@ -1085,17 +1086,19 @@ fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
         return;
     }
     let next = AtomicU32::new(0);
+    let size = (total / (threads(query) as u32 * 8).max(1)).clamp(PIECE.start, PIECE.end);
+    let crew = threads(query).clamp(1, total.div_ceil(size) as usize);
     std::thread::scope(|scope| {
-        for _ in 0..threads(query) {
+        for _ in 0..crew {
             scope.spawn(|| {
                 let mut worker = Worker::new(shared, AHEAD);
                 let mut going = true;
                 while going && !shared.budget.stopped() {
-                    let from = next.fetch_add(PIECE, Ordering::Relaxed);
+                    let from = next.fetch_add(size, Ordering::Relaxed);
                     if from >= total {
                         break;
                     }
-                    let piece = from..from.saturating_add(PIECE).min(total);
+                    let piece = from..from.saturating_add(size).min(total);
                     going = scan.run(piece, &mut |visit| worker.take(visit));
                 }
             });

@@ -140,6 +140,7 @@ trap 'exit 130' INT
 export HOME="$sandbox/home"
 export XDG_CONFIG_HOME="$HOME/.config"
 export XDG_DATA_HOME="$HOME/.local/share"
+export XDG_CACHE_HOME="$HOME/.cache"
 export _ZO_DATA_DIR="$XDG_DATA_HOME/zoxide"
 PATH="$sandbox/bin:$(dirname "$binary"):$PATH"
 export PATH
@@ -567,6 +568,13 @@ section_output() {
         "syk .log -0 | xargs -0 wc -c"
     run "-j sets the number of worker threads." \
         "syk -c auth -l -j 2"
+    run "-y builds an index: a list of every name, kept in ~/.cache/syk. It works on Linux." \
+        "syk -y" \
+        "syk does this by itself after a search in a very large folder."
+    run "A search then takes its names from the index, once nothing changed in the last two seconds. -T says so." \
+        "syk -n route -T"
+    run "-Y searches without the index and finds the same." \
+        "syk -n route -T -Y"
 }
 
 section_ranking() {

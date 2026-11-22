@@ -4,7 +4,7 @@ use std::fs::{self, File, Metadata};
 use std::io::{self, BufRead, BufReader, Write};
 use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -34,6 +34,7 @@ const DENSE: u32 = 8;
 const KEPT: usize = 24;
 const LOCKED: Duration = Duration::from_secs(600);
 const REFUSED: Duration = Duration::from_secs(24 * 60 * 60);
+const RESTED: Duration = Duration::from_secs(60);
 
 pub const DIRTY: u8 = 1;
 pub const GONE: u8 = 2;
@@ -473,7 +474,7 @@ impl Index {
     }
 
     pub fn open(root: &Path, print: &str) -> Opened {
-        let folder = fs::symlink_metadata(root).is_ok_and(|found| found.is_dir());
+        let folder = fs::metadata(root).is_ok_and(|found| found.is_dir());
         let Some(real) = folder.then(|| fs::canonicalize(root).ok()).flatten() else {
             return Opened::Missing;
         };
@@ -595,9 +596,12 @@ impl Index {
             let folder = self.folder(slot);
             let record = self.record(folder.entry);
             trail.step(root, record.depth as usize, self.name(&record));
+            let found = match record.depth {
+                0 => fs::metadata(trail.as_path()),
+                _ => fs::symlink_metadata(trail.as_path()),
+            };
             let clean = folder.flags & RACY == 0
-                && fs::symlink_metadata(trail.as_path())
-                    .is_ok_and(|found| found.is_dir() && Stamp::of(&found) == folder.stamp);
+                && found.is_ok_and(|found| found.is_dir() && Stamp::of(&found) == folder.stamp);
             if !clean {
                 dirty.push(slot);
             }
@@ -606,8 +610,9 @@ impl Index {
 
     pub fn stale(&self, root: &[u8], threads: usize) -> Vec<u32> {
         let next = AtomicU32::new(0);
+        let crew = threads.clamp(1, self.folders.div_ceil(STRIDE) as usize);
         let mut dirty: Vec<u32> = std::thread::scope(|scope| {
-            let crew: Vec<_> = (0..threads.max(1))
+            let crew: Vec<_> = (0..crew)
                 .map(|_| {
                     scope.spawn(|| {
                         let mut dirty = Vec::new();
@@ -944,7 +949,11 @@ fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, 
             let slot = draft.folders.len() as u32;
             record.tag = Record::tag(form, slot);
             let path = entry.path();
-            let stamp = fs::symlink_metadata(path)
+            let found = match depth {
+                0 => fs::metadata(path),
+                _ => fs::symlink_metadata(path),
+            };
+            let stamp = found
                 .map(|metadata| Stamp::of(&metadata))
                 .unwrap_or_default();
             if *device.get_or_insert(stamp.device) != stamp.device {
@@ -1068,7 +1077,11 @@ fn prune(store: &Path) {
 pub fn build(root: &Path, print: &str, builder: WalkBuilder) -> Result<Built, String> {
     let real = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
     let store = store().ok_or("there is no cache folder, because HOME is not set")?;
-    fs::create_dir_all(&store).map_err(|error| format!("{}: {error}", store.display()))?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&store)
+        .map_err(|error| format!("{}: {error}", store.display()))?;
     if !trusted(&real) {
         return Err(refuse(
             &real,
@@ -1091,7 +1104,11 @@ pub fn build(root: &Path, print: &str, builder: WalkBuilder) -> Result<Built, St
     let made = gather(root, started, builder).and_then(|draft| {
         let bytes = encode(&draft, &real, print, started);
         let partial = store.join(format!("{name}.{}.part", std::process::id()));
-        let written = File::create(&partial)
+        let written = File::options()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&partial)
             .and_then(|mut file| file.write_all(&bytes))
             .and_then(|()| fs::rename(&partial, store.join(format!("{name}.idx"))));
         if let Err(error) = written {
@@ -1120,7 +1137,8 @@ pub fn wanted(root: &Path, print: &str) -> bool {
     };
     let busy = place(&real, print, "lock").is_some_and(|lock| younger(&lock, LOCKED));
     let refused = place(&real, print, "no").is_some_and(|marker| younger(&marker, REFUSED));
-    !busy && !refused && trusted(&real)
+    let rested = !place(&real, print, "idx").is_some_and(|index| younger(&index, RESTED));
+    !busy && !refused && rested && trusted(&real)
 }
 
 pub fn spawn(root: &Path, flags: &[String]) -> io::Result<()> {

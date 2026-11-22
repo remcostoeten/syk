@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- After a search that walks more than 20,000 entries, syk builds an index of the names in the background and keeps it in `~/.cache/syk`. Later searches below that folder check every folder in the index for changes and read only the ones that changed, so they find the same as a search without an index. Linux only.
+- `-y` builds an index right away, `-Y` searches without one, and `-T` says whether the names came from an index.
 - Groups of names are skipped as a whole. `deps` (node_modules, venv and other dependency folders) and `cache` (__pycache__, .next and other caches) are skipped without asking, also where no ignore file lists them.
 - Lock files (`lock`) are found by name, but their contents are not searched.
 - `-g` skips a group: `build`, `lock`, `min` and `media` exist next to the two above, `-g min:content` leaves only the contents unsearched, and `-g 'name=a,b'` makes a group of your own.

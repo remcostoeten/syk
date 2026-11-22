@@ -2,8 +2,8 @@ use std::fmt::Write;
 
 use crate::group::Skip;
 use crate::pattern::{Pattern, Reading, Term};
+use crate::plan::{Compiled, compile};
 use crate::query::{Format, Kind, Matching, Query};
-use crate::walk::{Compiled, compile};
 
 fn row(out: &mut String, label: &str, value: &str) {
     let _ = writeln!(out, "{label:<10}{value}");
@@ -230,10 +230,10 @@ pub fn render(query: &Query) -> Result<String, String> {
     if query.output.context > 0 {
         output.push(format!("{} lines of context", query.output.context));
     }
-    if crate::walk::retryable(query).is_some() {
+    if crate::run::retryable(query).is_some() {
         output.push("retries with a close spelling when nothing is found".to_string());
     }
-    if crate::walk::ranked(query, std::io::IsTerminal::is_terminal(&std::io::stdout())) {
+    if crate::kept::ranked(query, std::io::IsTerminal::is_terminal(&std::io::stdout())) {
         output.push("ranked by relevance".to_string());
     }
     if walk.sort {

@@ -8,19 +8,26 @@ mod group;
 mod help;
 mod index;
 mod item;
+mod kept;
 mod load;
 mod output;
 mod pager;
 mod parse;
 mod pattern;
 mod pick;
+mod plan;
 mod query;
 mod rank;
+mod replay;
+mod report;
+mod run;
+mod search;
 mod setup;
 mod shell;
 mod spell;
 mod stop;
 mod walk;
+mod worker;
 
 use std::ffi::OsString;
 use std::process::ExitCode;
@@ -88,7 +95,7 @@ fn main() -> ExitCode {
             }
             Err(error) => fail(&error),
         },
-        Ok(Outcome::Run(query)) => walk::run(*query),
+        Ok(Outcome::Run(query)) => run::run(*query),
         Ok(Outcome::Help(topics, terms)) => {
             help::print(&topics, &terms);
             ExitCode::SUCCESS

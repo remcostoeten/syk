@@ -15,7 +15,7 @@ use ignore::overrides::{Override, OverrideBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
 use crate::act;
-use crate::group::{self, Group, Skips, ends_with};
+use crate::group::{self, Group, Skip, Skips, ends_with};
 use crate::load::{self, Loaded};
 use crate::output::{Budget, Entry, Layout, Lines, Style, write_count, write_entry};
 use crate::pattern::Pattern;
@@ -77,6 +77,7 @@ pub fn compile(query: &Query) -> Result<Compiled, String> {
 struct Shared {
     plan: Compiled,
     filters: Filters,
+    unread: Skips,
     folders: bool,
     stat: bool,
     cutoffs: Vec<(bool, SystemTime)>,
@@ -106,6 +107,7 @@ struct Tally {
     lines: u64,
     files: u64,
     names: u64,
+    unread: u64,
 }
 
 impl Tally {
@@ -115,6 +117,7 @@ impl Tally {
         self.lines += other.lines;
         self.files += other.files;
         self.names += other.names;
+        self.unread += other.unread;
     }
 }
 
@@ -412,12 +415,27 @@ impl<'a> Worker<'a> {
                 (hit, content.is_none())
             }
         };
+        let unread = kind.is_file()
+            && shared.plan.content().is_some()
+            && shared.unread.by_name()
+            && self.unread(entry);
+        self.tally.unread += u64::from(unread);
         let job = Job {
             hit: hit.flatten(),
             named: alone && hit.is_some(),
-            plain: kind.is_file(),
+            plain: kind.is_file() && !unread,
         };
         (job.named || (job.plain && shared.plan.content().is_some())).then_some(job)
+    }
+
+    fn unread(&self, entry: &DirEntry) -> bool {
+        entry
+            .path()
+            .as_os_str()
+            .as_bytes()
+            .rsplit(|byte| *byte == b'/')
+            .take(entry.depth())
+            .any(|part| self.shared.unread.matches(part))
     }
 
     fn file(&mut self, entry: &DirEntry, job: Job, loaded: Option<io::Result<Loaded>>) {
@@ -702,7 +720,7 @@ fn excludes(query: &Query) -> Result<Override, String> {
                 .map_err(|error| format!("-E {exclude} is not a usable pattern: {error}"))?;
         }
     }
-    for glob in skips(query).globs {
+    for glob in skips(query, Skip::Whole).globs {
         builder
             .add(&format!("!{glob}"))
             .map_err(|error| format!("-g {glob} is not a usable pattern: {error}"))?;
@@ -710,11 +728,11 @@ fn excludes(query: &Query) -> Result<Override, String> {
     builder.build().map_err(|error| error.to_string())
 }
 
-fn skips(query: &Query) -> Skips {
+fn skips(query: &Query, skip: Skip) -> Skips {
     if query.walk.no_ignore || query.walk.all {
         Skips::none()
     } else {
-        Skips::new(&query.filters.groups)
+        Skips::new(&query.filters.groups, skip)
     }
 }
 
@@ -736,7 +754,7 @@ fn walker(query: &Query) -> WalkBuilder {
         .max_depth(query.walk.depth)
         .threads(threads(query));
     let git = hidden && !query.walk.all;
-    let skips = skips(query);
+    let skips = skips(query, Skip::Whole);
     if git || skips.by_name() {
         builder.filter_entry(move |entry| {
             let name = entry.file_name().as_bytes();
@@ -849,6 +867,7 @@ fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> 
         blocks: Mutex::new(Vec::new()),
         tally: Mutex::new(Tally::default()),
         filters: query.filters.clone(),
+        unread: skips(query, Skip::Contents),
     };
 
     let mut builder = walker(query);
@@ -922,7 +941,7 @@ fn remembered(query: &Query, habits: &Habits, found: &[Block], view: View) -> Ve
         base: base.as_deref(),
     };
     let excluded = excludes(query).ok().filter(|excluded| !excluded.is_empty());
-    let skipped = skips(query);
+    let skipped = skips(query, Skip::Whole);
     let roots: Vec<Vec<u8>> = query
         .roots
         .iter()
@@ -1298,6 +1317,22 @@ pub fn run(query: Query) -> ExitCode {
         let group = &group.name;
         eprintln!(
             "syk: the group {group} is skipped, and {name} belongs to it. Add -u {group} to search it."
+        );
+    }
+    if !found && tally.unread > 0 && io::stderr().is_terminal() {
+        let groups: Vec<&str> = query
+            .filters
+            .groups
+            .iter()
+            .filter(|group| group.skip == Skip::Contents)
+            .map(|group| group.name.as_str())
+            .collect();
+        eprintln!(
+            "syk: the contents of {} in the {} {} were not searched. Add -u {} to search them.",
+            counted(tally.unread, "file", "files"),
+            if groups.len() == 1 { "group" } else { "groups" },
+            groups.join(" and "),
+            groups.join(",")
         );
     }
     if let Some(expanded) = &query.expanded

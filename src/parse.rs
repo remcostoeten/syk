@@ -389,9 +389,9 @@ impl Draft {
             }
             Id::Ignore => match text.split_once('=') {
                 Some((name, patterns)) => group::define(&mut self.filters.groups, name, patterns)?,
-                None => group::toggle(&mut self.filters.groups, text, true)?,
+                None => group::skip(&mut self.filters.groups, text)?,
             },
-            Id::Unignore => group::toggle(&mut self.filters.groups, text, false)?,
+            Id::Unignore => group::search(&mut self.filters.groups, text)?,
             Id::Size => self.filters.sizes.push(filter::parse_size(text)?),
             Id::Modified => self.filters.ages.push(filter::parse_age(text)?),
             Id::Type => self.filters.kind = Some(kind(text)?),
@@ -501,6 +501,7 @@ impl Draft {
         if roots.is_empty() {
             roots.push(PathBuf::from("."));
         }
+        group::check(&self.filters.groups)?;
         Ok(Query {
             plan: plan(self.slots, bare)?,
             roots,

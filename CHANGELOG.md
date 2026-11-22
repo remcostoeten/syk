@@ -3,9 +3,11 @@
 ## Unreleased
 
 - Groups of names are skipped as a whole. `deps` (node_modules, venv and other dependency folders) and `cache` (__pycache__, .next and other caches) are skipped without asking, also where no ignore file lists them.
-- `-g` skips a group: `build`, `lock`, `min` and `media` exist next to the two above, and `-g 'name=a,b'` makes a group of your own.
+- Lock files (`lock`) are found by name, but their contents are not searched.
+- `-g` skips a group: `build`, `lock`, `min` and `media` exist next to the two above, `-g min:content` leaves only the contents unsearched, and `-g 'name=a,b'` makes a group of your own.
 - `-u` searches a group again, and `-I` and `-a` switch every group off.
 - `-x` lists the groups that are skipped and the names in them.
+- When nothing is found, a line on the terminal says how many files had their contents left out.
 
 ## 0.1.1
 

@@ -1,5 +1,6 @@
 use std::fmt::Write;
 
+use crate::group::Skip;
 use crate::pattern::{Pattern, Reading, Term};
 use crate::query::{Format, Kind, Matching, Query};
 use crate::walk::{Compiled, compile};
@@ -176,13 +177,14 @@ pub fn render(query: &Query) -> Result<String, String> {
     .map(|(_, what)| what)
     .collect();
     row(&mut out, "skips", &skipped.join(", "));
-    for group in filters
-        .groups
-        .iter()
-        .filter(|group| group.active && !ignored)
-    {
+    for group in filters.groups.iter().filter(|_| !ignored) {
+        let what = match group.skip {
+            Skip::Off => continue,
+            Skip::Contents => "the contents of the group",
+            Skip::Whole => "the group",
+        };
         let names = group.patterns.join(", ");
-        row(&mut out, "", &format!("the group {}: {names}", group.name));
+        row(&mut out, "", &format!("{what} {}: {names}", group.name));
     }
 
     let mut output: Vec<String> = Vec::new();

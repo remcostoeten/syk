@@ -17,7 +17,10 @@ METHOD = (
     "out of the comparison, because syk drops it and ripgrep prints it. The tools take "
     "turns within every round, which spreads background load evenly. cpu is the user and "
     "system time of the process, added over its threads, and moves less than the wall "
-    "time when the machine is busy. The exit status is 1 when any case disagrees."
+    "time when the machine is busy. The exit status is 1 when any case disagrees. "
+    "--cold drops the file data of the code folder from memory before every timed run "
+    "of a content search. It uses posix_fadvise, which needs no root. Folder listings "
+    "stay in memory, so this measures reading files from disk and not listing them."
 )
 REGEX = r"fn \w+_unchecked\("
 TODO = "TODO|FIXME"
@@ -215,6 +218,40 @@ def tree_cases():
     ]
 
 
+def small_cases():
+    return [
+        {
+            "name": "content in a small project",
+            "what": "lines with fn in the syk sources",
+            "kind": "lines",
+            "tools": {
+                "syk": ["syk", "-U", "-s", "-c", "fn"],
+                "rg": RG + ["fn"],
+            },
+        },
+        {
+            "name": "names in a small project",
+            "what": "entries whose name contains walk",
+            "kind": "paths",
+            "tools": {
+                "syk": ["syk", "-U", "-s", "-n", "walk"],
+                "fd": FD + ["-s", "walk"],
+            },
+        },
+    ]
+
+
+def forget(folder):
+    for path, _, names in os.walk(folder):
+        for name in names:
+            try:
+                handle = os.open(os.path.join(path, name), os.O_RDONLY | os.O_NOFOLLOW)
+            except OSError:
+                continue
+            os.posix_fadvise(handle, 0, 0, os.POSIX_FADV_DONTNEED)
+            os.close(handle)
+
+
 def resolve(argv, syk):
     if argv[0] == "syk":
         return [syk] + argv[1:]
@@ -263,7 +300,7 @@ def agreement(outputs, kind):
     return False, f"DIFFERENT: {sizes}"
 
 
-def measure(case, folder, syk, runs, warmup):
+def measure(case, folder, syk, runs, warmup, cold):
     tools = {}
     for tool, argv in case["tools"].items():
         resolved = resolve(argv, syk)
@@ -282,6 +319,8 @@ def measure(case, folder, syk, runs, warmup):
     for round in range(runs):
         turn = order[round % len(order) :] + order[: round % len(order)]
         for tool in turn:
+            if cold:
+                forget(folder)
             taken, _, cpu = run(tools[tool], folder)
             times[tool].append(taken)
             work[tool].append(cpu)
@@ -338,13 +377,15 @@ def main():
     parser.add_argument("--syk", default=str(built) if built.exists() else "syk")
     parser.add_argument("--runs", type=int, default=15)
     parser.add_argument("--warmup", type=int, default=2)
+    parser.add_argument("--small", type=Path, default=here)
+    parser.add_argument("--cold", action="store_true")
     parser.add_argument("--json", type=Path)
     args = parser.parse_args()
 
     syk = shutil.which(args.syk)
     if not syk:
         sys.exit(f"bench: {args.syk} is not an executable.")
-    for folder in (args.code, args.tree):
+    for folder in (args.code, args.tree, args.small):
         if not folder.is_dir():
             sys.exit(f"bench: {folder} is not a folder.")
 
@@ -359,14 +400,21 @@ def main():
         "runs": args.runs,
         "code": str(args.code),
         "tree": str(args.tree),
+        "small": str(args.small),
+        "cold": args.cold,
     }
     for key, value in setup.items():
         print(f"{key:<6} {value}")
 
     results = []
-    for folder, cases in ((args.code, code_cases()), (args.tree, tree_cases())):
+    groups = (
+        (args.code, code_cases(), args.cold),
+        (args.tree, tree_cases(), False),
+        (args.small, small_cases(), False),
+    )
+    for folder, cases, cold in groups:
         for case in cases:
-            result = measure(case, folder, syk, args.runs, args.warmup)
+            result = measure(case, folder, syk, args.runs, args.warmup, cold)
             if result:
                 result["folder"] = str(folder)
                 report(result)

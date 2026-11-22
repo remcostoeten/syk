@@ -24,9 +24,30 @@ METHOD = (
     "stay in memory, so this measures reading files from disk and not listing them. "
     "syk walks the folders, like the other tools. syk index is syk with an index of "
     "names that was built before the timing, in a temporary cache folder. It is left "
-    "out where no index can be built."
+    "out where no index can be built. --html writes the results as a page with charts."
 )
 INDEX = "syk index"
+SECTIONS = (
+    ("names", "Names, plain search", "Hidden and ignored entries are left out."),
+    (
+        "names-all",
+        "Names, everything included",
+        "Hidden and ignored entries are listed too. No index applies here.",
+    ),
+    ("contents", "Contents, plain search", "Hidden and ignored files are left out."),
+    (
+        "contents-all",
+        "Contents, everything included",
+        "Hidden and ignored files are searched too, which is all that grep can do.",
+    ),
+    ("small", "A small project", "A folder with a few dozen files."),
+)
+TRIMMED = (
+    ", hidden and ignored left out",
+    ", hidden and ignored included",
+    " in a small project",
+    " in a large tree",
+)
 REGEX = r"fn \w+_unchecked\("
 TODO = "TODO|FIXME"
 CFG = r"cfg\("
@@ -120,7 +141,7 @@ def code_cases():
             },
         },
         {
-            "name": "hidden and ignored files included",
+            "name": "plain text in every file, hidden and ignored included",
             "what": "unsafe impl in every file that is not binary",
             "kind": "lines",
             "tools": {
@@ -449,6 +470,61 @@ def report(result):
         )
 
 
+def short(folder):
+    home = str(Path.home())
+    return "~" + folder[len(home) :] if folder.startswith(home) else folder
+
+
+def counted(note):
+    words = note.removeprefix("identical, ").split(" ")
+    return " ".join(f"{int(word):,}" if word.isdigit() else word for word in words)
+
+
+def page(setup, results):
+    sections = []
+    for key, title, note in SECTIONS:
+        chosen = [result for result in results if result["section"] == key]
+        if not chosen:
+            continue
+        cases = []
+        for result in chosen:
+            name = result["name"]
+            for ending in TRIMMED:
+                name = name.replace(ending, "")
+            order = sorted(result["tools"], key=lambda tool: (tool != INDEX, tool != "syk"))
+            cases.append(
+                {
+                    "n": name,
+                    "w": result["what"],
+                    "r": counted(result["note"]),
+                    "t": [
+                        [
+                            tool,
+                            round(result["tools"][tool]["median"] * 1000, 1),
+                            round(result["tools"][tool]["min"] * 1000, 1),
+                            round(result["tools"][tool]["cpu"] * 1000),
+                            result["tools"][tool]["command"],
+                        ]
+                        for tool in order
+                    ],
+                }
+            )
+        folder = chosen[0]["folder"]
+        here = str(Path(__file__).resolve().parent.parent)
+        place = "the syk sources" if folder == here else short(folder)
+        sections.append({"h": title, "s": f"{note} Searched in {place}.", "c": cases})
+    syk = f"{setup['syk']} at commit {setup['commit']}" if setup["commit"] else setup["syk"]
+    shown = [
+        ["Measured", setup["date"]],
+        ["Tools", ", ".join([syk] + [setup[tool] for tool in ("rg", "fd", "find", "grep")])],
+        ["Machine", f"{setup['cores']} threads, load average {setup['load']:.1f} at the start"],
+        ["Runs", f"{setup['runs']} for every tool in every case"],
+    ]
+    data = {"setup": {"runs": setup["runs"], "shown": shown, "method": METHOD}, "sections": sections}
+    template = Path(__file__).with_name("bench.html").read_text()
+    return template.replace("__DATA__", json.dumps(data).replace("</", "<\\/"))
+
+
 def version(argv):
     found = shutil.which(argv[0]) or argv[0]
     try:
@@ -471,6 +547,7 @@ def main():
     parser.add_argument("--small", type=Path, default=here)
     parser.add_argument("--cold", action="store_true")
     parser.add_argument("--json", type=Path)
+    parser.add_argument("--html", type=Path)
     args = parser.parse_args()
 
     syk = shutil.which(args.syk)
@@ -486,6 +563,10 @@ def main():
         "fd": version(["fd", "--version"]),
         "find": version(["find", "--version"]),
         "grep": version(["grep", "--version"]),
+        "date": time.strftime("%Y-%m-%d"),
+        "commit": subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=here, capture_output=True, text=True
+        ).stdout.strip(),
         "cores": os.cpu_count(),
         "load": os.getloadavg()[0],
         "runs": args.runs,
@@ -499,10 +580,10 @@ def main():
 
     results = []
     groups = (
-        (args.code, indexed(code_cases()), args.cold),
-        (args.tree, tree_cases(), False),
-        (args.tree, indexed(view_cases()), False),
-        (args.small, small_cases(), False),
+        ("contents", args.code, indexed(code_cases()), args.cold),
+        ("names-all", args.tree, tree_cases(), False),
+        ("names", args.tree, indexed(view_cases()), False),
+        ("small", args.small, small_cases(), False),
     )
     with tempfile.TemporaryDirectory(prefix="syk-bench-") as cache:
         os.environ["XDG_CACHE_HOME"] = cache
@@ -515,17 +596,21 @@ def main():
         }
         for folder, built in lists.items():
             print(f"index  {'built' if built else 'not built'} for {folder}")
-        for folder, cases, cold in groups:
+        for section, folder, cases, cold in groups:
             for case in cases:
                 listed = lists.get(folder, False)
                 result = measure(case, folder, syk, args.runs, args.warmup, cold, listed)
                 if result:
+                    everything = section == "contents" and "-a" in case["tools"]["syk"]
+                    result["section"] = "contents-all" if everything else section
                     result["folder"] = str(folder)
                     report(result)
                     results.append(result)
 
     if args.json:
         args.json.write_text(json.dumps({"setup": setup, "results": results}, indent=2))
+    if args.html:
+        args.html.write_text(page(setup, results))
     if not all(result["same"] for result in results):
         sys.exit(1)
 

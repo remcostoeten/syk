@@ -176,6 +176,14 @@ pub fn render(query: &Query) -> Result<String, String> {
     .map(|(_, what)| what)
     .collect();
     row(&mut out, "skips", &skipped.join(", "));
+    for group in filters
+        .groups
+        .iter()
+        .filter(|group| group.active && !ignored)
+    {
+        let names = group.patterns.join(", ");
+        row(&mut out, "", &format!("the group {}: {names}", group.name));
+    }
 
     let mut output: Vec<String> = Vec::new();
     if query.output.browse {

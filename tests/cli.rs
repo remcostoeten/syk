@@ -320,6 +320,67 @@ fn hidden_and_ignored_entries_are_opt_in() {
 }
 
 #[test]
+fn named_groups_are_skipped_until_they_are_asked_for() {
+    let fixture = Fixture::new();
+    fixture.file("node_modules/pkg/index.js", "needle in a package\n");
+    fixture.file("vendor/lib.js", "needle in vendor\n");
+    fixture.file("Cargo.lock", "needle locked\n");
+    fixture.file(".cache/page.txt", "needle cached\n");
+    let listed = |args: &[&str]| fixture.lines(&[&["-c", "needle", "-l"], args].concat());
+    let sources = ["src/api/auth.ts", "src/api/route.ts"];
+    assert_eq!(
+        listed(&[]),
+        ["Cargo.lock", sources[0], sources[1], "vendor/lib.js"]
+    );
+    assert_eq!(
+        listed(&["-u", "deps"]),
+        [
+            "Cargo.lock",
+            "node_modules/pkg/index.js",
+            sources[0],
+            sources[1],
+            "vendor/lib.js"
+        ]
+    );
+    assert_eq!(listed(&["-g", "lock", "-g", "deps+=vendor"]), sources);
+    assert_eq!(listed(&["-g", "mine=src/api,*.lock"]), ["vendor/lib.js"]);
+    assert_eq!(
+        listed(&["-H"]),
+        [
+            ".hidden/secret.txt",
+            "Cargo.lock",
+            sources[0],
+            sources[1],
+            "vendor/lib.js"
+        ]
+    );
+    assert!(listed(&["-H", "-u", "all"]).contains(&".cache/page.txt".to_string()));
+    let ignored = listed(&["-I"]);
+    assert!(ignored.contains(&"node_modules/pkg/index.js".to_string()));
+    assert!(ignored.contains(&"ignored/skip.txt".to_string()));
+    assert_eq!(
+        fixture.lines(&["-c", "needle", "-l", "node_modules"]),
+        ["node_modules/pkg/index.js"]
+    );
+    assert!(
+        fixture
+            .errors(&["-c", "needle", "-g", "nope"])
+            .contains("\"nope\" is not a group")
+    );
+
+    fixture.run(&["-n", "index", "-u", "deps", "-1"]);
+    assert_eq!(fixture.run(&["-n", "index", "-r"]), (String::new(), 1));
+    assert_eq!(
+        fixture.run(&["-n", "index", "-r", "-u", "deps"]).0,
+        "node_modules/pkg/index.js\n"
+    );
+
+    fixture.outside("syk/config", "-g lock\n");
+    assert_eq!(listed(&[]), [sources[0], sources[1], "vendor/lib.js"]);
+    assert_eq!(listed(&["-u", "lock"]).len(), 4);
+}
+
+#[test]
 fn patterns_are_forgiving() {
     let fixture = Fixture::new();
     assert_eq!(

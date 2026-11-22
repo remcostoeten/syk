@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::filter::{self, Parsed};
 use crate::flags::{self, Arity, Flag, Id};
+use crate::group;
 use crate::query::{
     Case, Defaults, Expanded, Filters, Format, Kind, Matching, Output, Plan, Query, Targets, Terms,
     Walk,
@@ -96,7 +97,10 @@ fn read(raw: Vec<OsString>, inherited: usize) -> Result<Outcome, String> {
     let mut draft = Draft {
         slots: [Slot::Off, Slot::Off, Slot::Off],
         words: Vec::new(),
-        filters: Filters::default(),
+        filters: Filters {
+            groups: group::presets(),
+            ..Filters::default()
+        },
         matching: Matching::default(),
         walk: Walk::default(),
         output: Output::default(),
@@ -383,6 +387,11 @@ impl Draft {
                     self.filters.excludes.push(part.to_string());
                 }
             }
+            Id::Ignore => match text.split_once('=') {
+                Some((name, patterns)) => group::define(&mut self.filters.groups, name, patterns)?,
+                None => group::toggle(&mut self.filters.groups, text, true)?,
+            },
+            Id::Unignore => group::toggle(&mut self.filters.groups, text, false)?,
             Id::Size => self.filters.sizes.push(filter::parse_size(text)?),
             Id::Modified => self.filters.ages.push(filter::parse_age(text)?),
             Id::Type => self.filters.kind = Some(kind(text)?),

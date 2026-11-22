@@ -15,6 +15,7 @@ use ignore::overrides::{Override, OverrideBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
 
 use crate::act;
+use crate::group::{self, Group, Skips, ends_with};
 use crate::load::{self, Loaded};
 use crate::output::{Budget, Entry, Layout, Lines, Style, write_count, write_entry};
 use crate::pattern::Pattern;
@@ -378,7 +379,7 @@ impl<'a> Worker<'a> {
         if !extensions.is_empty()
             && !extensions
                 .iter()
-                .any(|extension| ends_with(name, extension))
+                .any(|extension| ends_with(name, extension.as_bytes()))
         {
             return None;
         }
@@ -651,12 +652,6 @@ fn display(path: &Path) -> &[u8] {
     bytes.strip_prefix(b"./").unwrap_or(bytes)
 }
 
-fn ends_with(name: &[u8], extension: &str) -> bool {
-    let extension = extension.as_bytes();
-    name.len() >= extension.len()
-        && name[name.len() - extension.len()..].eq_ignore_ascii_case(extension)
-}
-
 fn view(query: &Query) -> View {
     let output = &query.output;
     let terminal = io::stdout().is_terminal();
@@ -707,7 +702,20 @@ fn excludes(query: &Query) -> Result<Override, String> {
                 .map_err(|error| format!("-E {exclude} is not a usable pattern: {error}"))?;
         }
     }
+    for glob in skips(query).globs {
+        builder
+            .add(&format!("!{glob}"))
+            .map_err(|error| format!("-g {glob} is not a usable pattern: {error}"))?;
+    }
     builder.build().map_err(|error| error.to_string())
+}
+
+fn skips(query: &Query) -> Skips {
+    if query.walk.no_ignore || query.walk.all {
+        Skips::none()
+    } else {
+        Skips::new(&query.filters.groups)
+    }
 }
 
 fn walker(query: &Query) -> WalkBuilder {
@@ -727,11 +735,16 @@ fn walker(query: &Query) -> WalkBuilder {
         .follow_links(query.walk.follow)
         .max_depth(query.walk.depth)
         .threads(threads(query));
-    if hidden && !query.walk.all {
-        builder.filter_entry(|entry| entry.file_name() != ".git");
+    let git = hidden && !query.walk.all;
+    let skips = skips(query);
+    if git || skips.by_name() {
+        builder.filter_entry(move |entry| {
+            let name = entry.file_name().as_bytes();
+            entry.depth() == 0 || !(git && name == b".git" || skips.matches(name))
+        });
     }
-    if !query.filters.excludes.is_empty()
-        && let Ok(excluded) = excludes(query)
+    if let Ok(excluded) = excludes(query)
+        && !excluded.is_empty()
     {
         builder.overrides(excluded);
     }
@@ -909,6 +922,7 @@ fn remembered(query: &Query, habits: &Habits, found: &[Block], view: View) -> Ve
         base: base.as_deref(),
     };
     let excluded = excludes(query).ok().filter(|excluded| !excluded.is_empty());
+    let skipped = skips(query);
     let roots: Vec<Vec<u8>> = query
         .roots
         .iter()
@@ -932,7 +946,12 @@ fn remembered(query: &Query, habits: &Habits, found: &[Block], view: View) -> Ve
             continue;
         };
         let depth = below.split(|byte| *byte == b'/').count();
-        if query.walk.depth.is_some_and(|deepest| depth > deepest) || have.contains(path) {
+        if query.walk.depth.is_some_and(|deepest| depth > deepest)
+            || have.contains(path)
+            || below
+                .split(|byte| *byte == b'/')
+                .any(|part| skipped.matches(part))
+        {
             continue;
         }
         let name = below.rsplit(|byte| *byte == b'/').next().unwrap_or(below);
@@ -1088,6 +1107,22 @@ fn several(query: &Query) -> Option<&Terms> {
         Plan::Narrow { dir, name, content } => vec![dir, name, content],
     };
     terms.into_iter().flatten().find(|terms| terms.len() > 1)
+}
+
+fn covered(query: &Query) -> Option<(&Group, &str)> {
+    if query.walk.no_ignore || query.walk.all {
+        return None;
+    }
+    let names: Vec<&Option<Terms>> = match &query.plan {
+        Plan::Union { pattern, targets } if targets.dirs || targets.files => vec![pattern],
+        Plan::Union { .. } => Vec::new(),
+        Plan::Narrow { dir, name, .. } => vec![dir, name],
+    };
+    names
+        .into_iter()
+        .flatten()
+        .flatten()
+        .find_map(|term| group::covering(&query.filters.groups, term))
 }
 
 pub fn retryable(query: &Query) -> Option<(&str, Targets)> {
@@ -1254,6 +1289,15 @@ pub fn run(query: Query) -> ExitCode {
         eprintln!(
             "syk: nothing has {} together. Every word has to be in the same name or on the same line. A word meant as a path has to exist, or end in a slash.",
             words.join(" and ")
+        );
+    }
+    if !found
+        && io::stderr().is_terminal()
+        && let Some((group, name)) = covered(&query)
+    {
+        let group = &group.name;
+        eprintln!(
+            "syk: the group {group} is skipped, and {name} belongs to it. Add -u {group} to search it."
         );
     }
     if let Some(expanded) = &query.expanded

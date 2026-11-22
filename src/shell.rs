@@ -5,11 +5,13 @@ use crate::flags::{Arity, FLAGS, Flag, Id};
 pub const DEFAULT_NAME: &str = "s";
 const KINDS: &str = "file dir link";
 const SHELLS: &str = "fish zsh bash";
+const GROUPS: &str = "deps cache build lock min media all";
 
 fn choices(flag: &Flag) -> Option<&'static str> {
     match flag.id {
         Id::Type => Some(KINDS),
         Id::Init => Some(SHELLS),
+        Id::Ignore | Id::Unignore => Some(GROUPS),
         _ => None,
     }
 }
@@ -150,6 +152,18 @@ mod tests {
                 assert!(script.contains(flag.long), "{shell} lacks --{}", flag.long);
             }
         }
+    }
+
+    #[test]
+    fn group_flags_complete_every_group() {
+        for preset in &crate::group::PRESETS {
+            assert!(
+                GROUPS.split(' ').any(|name| name == preset.name),
+                "{} is not completed",
+                preset.name
+            );
+        }
+        assert!(GROUPS.ends_with(crate::group::EVERY));
     }
 
     #[test]

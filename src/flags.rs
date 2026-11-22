@@ -17,6 +17,8 @@ pub enum Id {
     Hidden,
     NoIgnore,
     All,
+    Ignore,
+    Unignore,
     Follow,
     List,
     Max,
@@ -161,7 +163,7 @@ fn distance(left: &str, right: &str) -> usize {
     row[right.len()]
 }
 
-pub static FLAGS: [Flag; 46] = [
+pub static FLAGS: [Flag; 48] = [
     Flag {
         id: Id::Name,
         short: 'n',
@@ -441,7 +443,7 @@ pub static FLAGS: [Flag; 46] = [
         arity: Arity::Switch,
         group: Group::Walk,
         summary: "Include files that ignore rules exclude.",
-        detail: "By default, anything matched by .gitignore, .ignore, .git/info/exclude or the global Git ignore file is skipped. That is what keeps node_modules, target and build output out of the results. -I turns those rules off. Hidden entries stay skipped unless -H is also given.",
+        detail: "By default, anything matched by .gitignore, .ignore, .git/info/exclude or the global Git ignore file is skipped, and so are the groups of -g. That is what keeps node_modules, target and build output out of the results. -I turns those rules and every group off. Hidden entries stay skipped unless -H is also given.",
         examples: &[
             ("syk -I -d node_modules", "find the node_modules folders"),
             (
@@ -449,7 +451,7 @@ pub static FLAGS: [Flag; 46] = [
                 "names matching react, ignored ones included",
             ),
         ],
-        related: &[Id::Hidden, Id::All],
+        related: &[Id::Hidden, Id::All, Id::Unignore],
     },
     Flag {
         id: Id::All,
@@ -465,6 +467,51 @@ pub static FLAGS: [Flag; 46] = [
             "search everything below the current folder",
         )],
         related: &[Id::Hidden, Id::NoIgnore],
+    },
+    Flag {
+        id: Id::Ignore,
+        short: 'g',
+        long: "ignore",
+        aliases: &["group", "groups", "skip-group"],
+        arity: Arity::Required("GROUPS"),
+        group: Group::Walk,
+        summary: "Skip a named group of files, such as lock.",
+        detail: "A group is a list of names that belong together, such as the folders that package managers fill. Give several separated by commas, or repeat the flag. deps and cache are skipped without asking, and the others when you name them. A flag in the config file makes it the default.\n\ndeps, skipped by default: node_modules, bower_components, jspm_packages, site-packages, venv, .venv, Pods, .pnpm-store.\n\ncache, skipped by default: __pycache__, *.pyc, *.pyo, .cache, .pytest_cache, .mypy_cache, .ruff_cache, .tox, .gradle, .turbo, .parcel-cache, .sass-cache, .eslintcache, .next, .nuxt, .svelte-kit, .DS_Store, Thumbs.db.\n\nbuild: target, dist, build, out, _build, coverage, *.o, *.class.\n\nlock: package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lock, bun.lockb, Cargo.lock, composer.lock, Gemfile.lock, poetry.lock, uv.lock, Pipfile.lock, go.sum, flake.lock, mix.lock, pubspec.lock, Podfile.lock.\n\nmin: *.min.js, *.min.css, *.map.\n\nmedia: *.png, *.jpg, *.jpeg, *.gif, *.webp, *.avif, *.ico, *.bmp, *.svg, *.mp3, *.wav, *.ogg, *.flac, *.mp4, *.mov, *.mkv, *.webm, *.avi, *.woff, *.woff2, *.ttf, *.otf, *.eot.\n\nall stands for every group. A name is matched whole and at any depth, and *.ext matches the end of a name. A folder that matches is not entered, but a path you give yourself is always searched. -I and -a switch every group off.\n\nA value with an = sign makes a group of your own and skips it: -g 'snapshots=__snapshots__,*.snap'. With += the names are added to a group that exists: -g deps+=vendor. Any other pattern in a group of your own is read the way -E reads it.",
+        examples: &[
+            ("syk -c react -g lock", "leave the lock files out"),
+            (
+                "syk .js -g build,min",
+                "skip build output and minified files",
+            ),
+            (
+                "syk -c TODO -g deps+=vendor",
+                "skip vendor together with deps",
+            ),
+            ("syk foo -g 'snaps=*.snap'", "a group of your own"),
+        ],
+        related: &[Id::Unignore, Id::Exclude, Id::NoIgnore],
+    },
+    Flag {
+        id: Id::Unignore,
+        short: 'u',
+        long: "unignore",
+        aliases: &["with", "keep", "search-group"],
+        arity: Arity::Required("GROUPS"),
+        group: Group::Walk,
+        summary: "Search a group that is skipped by default.",
+        detail: "Switches a group of -g off, so its files and folders are found again. deps and cache are the two that are skipped without asking. Give several separated by commas, or all for every group. Flags are read from left to right and the config file comes first, so -u on the command line also undoes a -g from the config file.\n\nIgnore rules still apply: a node_modules folder that .gitignore lists needs -I.",
+        examples: &[
+            (
+                "syk -d node_modules -u deps",
+                "find the node_modules folders",
+            ),
+            (
+                "syk -c useState -u deps",
+                "search installed packages as well",
+            ),
+            ("syk foo -u all", "skip no group"),
+        ],
+        related: &[Id::Ignore, Id::NoIgnore, Id::All],
     },
     Flag {
         id: Id::Follow,

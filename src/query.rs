@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use crate::group::Group;
+
 pub struct Query {
     pub plan: Plan,
     pub roots: Vec<PathBuf>,
@@ -47,6 +49,7 @@ pub struct Targets {
 pub struct Filters {
     pub extensions: Vec<String>,
     pub excludes: Vec<String>,
+    pub groups: Vec<Group>,
     pub sizes: Vec<SizeFilter>,
     pub ages: Vec<AgeFilter>,
     pub kind: Option<Kind>,

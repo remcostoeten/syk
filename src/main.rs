@@ -4,6 +4,7 @@ mod config;
 mod explain;
 mod filter;
 mod flags;
+mod group;
 mod help;
 mod load;
 mod output;

@@ -264,6 +264,9 @@ test('the auth route answers with a token', async () => {
 })
 EOF
     printf 'function login(){return auth()}\n' >dist/bundle.js
+    mkdir -p node_modules/jose
+    printf 'export function signToken() {}\n' >node_modules/jose/index.js
+    printf 'export function signToken(){}\n' >node_modules/jose/index.min.js
     cat >docs/guide.md <<'EOF'
 # Guide
 
@@ -380,6 +383,7 @@ section_project() {
   docs/guide.md                 10 days old
   logs/app.log                  2 MB, 40 days old
   logs/today.log                new and small
+  node_modules/jose/            an installed package, not in .gitignore
   shared -> ../shared           a symbolic link to a folder outside
   src/api/auth.ts               login and logout
   src/api/route.ts
@@ -518,6 +522,15 @@ section_walk() {
     run "-a is -H and -I together." \
         "syk -n -a -D 1 -t file" \
         ".env and .gitignore are listed next to the visible files."
+    run "node_modules is not in .gitignore, but it belongs to the group deps, which is skipped." \
+        "syk -c signToken" \
+        "Only auth.ts is shown."
+    run "-u searches a group again." \
+        "syk -c signToken -u deps" \
+        "Both files of the installed package are there now."
+    run "-g skips a group that is not skipped by default. min holds minified files." \
+        "syk -c signToken -u deps -g min" \
+        "index.min.js is gone again."
     run "shared is a symbolic link, and links are not followed." \
         "syk -c sharedAuth" \
         "Nothing found."

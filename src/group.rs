@@ -123,14 +123,19 @@ pub fn presets() -> Vec<Group> {
 
 fn unknown(groups: &[Group], name: &str) -> String {
     let names: Vec<&str> = groups.iter().map(|group| group.name.as_str()).collect();
+    let pattern = if name.contains(['*', '?', '[', '/', '.']) {
+        format!(" To leave out names by pattern, use -E {name:?}.")
+    } else {
+        String::new()
+    };
     format!(
-        "{name:?} is not a group. The groups are {}, and {EVERY} for every one of them.",
+        "{name:?} is not a group. The groups are {}, and {EVERY} for every one of them.{pattern}",
         names.join(", ")
     )
 }
 
 fn named(name: &str) -> bool {
-    name != EVERY
+    !name.eq_ignore_ascii_case(EVERY)
         && !name.is_empty()
         && name
             .chars()
@@ -145,11 +150,14 @@ fn extent(name: &str) -> (&str, Option<Skip>) {
 }
 
 fn set(groups: &mut [Group], name: &str, skip: Skip) -> Result<(), String> {
-    if name == EVERY {
+    if name.eq_ignore_ascii_case(EVERY) {
         groups.iter_mut().for_each(|group| group.skip = skip);
         return Ok(());
     }
-    let Some(at) = groups.iter().position(|group| group.name == name) else {
+    let Some(at) = groups
+        .iter()
+        .position(|group| group.name.eq_ignore_ascii_case(name))
+    else {
         return Err(unknown(groups, name));
     };
     groups[at].skip = skip;
@@ -192,7 +200,10 @@ pub fn define(groups: &mut Vec<Group>, name: &str, patterns: &str) -> Result<(),
             "The group {name} needs at least one name after the = sign."
         ));
     }
-    match groups.iter_mut().find(|group| group.name == name) {
+    match groups
+        .iter_mut()
+        .find(|group| group.name.eq_ignore_ascii_case(name))
+    {
         Some(group) if extends => {
             group.patterns.extend(patterns);
             group.skip = match (chosen, group.skip) {
@@ -335,6 +346,13 @@ mod tests {
         assert_eq!(skipped(&groups, Skip::Contents).len(), PRESETS.len());
         let error = skip(&mut groups, "depz").expect_err("an unknown group");
         assert!(error.contains("\"depz\" is not a group") && error.contains("deps, cache"));
+        assert!(!error.contains("-E"));
+        let error = skip(&mut groups, "*.ts").expect_err("a pattern");
+        assert!(error.ends_with("use -E \"*.ts\"."));
+        search(&mut groups, "ALL").expect("every group");
+        skip(&mut groups, "Lock,DEPS:content").expect("known groups");
+        assert_eq!(skipped(&groups, Skip::Whole), ["lock"]);
+        assert_eq!(skipped(&groups, Skip::Contents), ["deps"]);
         assert!(search(&mut groups, "lock:content").is_err());
     }
 

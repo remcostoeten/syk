@@ -121,9 +121,9 @@ fn lead(group: Group) -> Option<&'static str> {
         Group::Filter => {
             Some("-e, -S and -M also have the shorthand from ARGUMENTS: .ts, +10kb, -2h.")
         }
-        Group::Walk => {
-            Some("Hidden, ignored and binary files are skipped unless you ask for them.")
-        }
+        Group::Walk => Some(
+            "Hidden, ignored and binary files are skipped unless you ask for them, and so are dependency folders and caches. Lock files are found by name, but their contents are not shown.",
+        ),
         Group::Output => Some(
             "In a terminal, results are grouped and coloured. In a pipe they are plain, one per line.",
         ),
@@ -138,6 +138,9 @@ fn note(group: Group) -> Option<&'static str> {
     match group {
         Group::Target => Some(
             "Two of them with their own pattern narrow each other: -n route -c auth prints the lines matching auth in files named *route*.",
+        ),
+        Group::Walk => Some(
+            "The groups are deps, cache, build, lock, min and media. syk -g -h lists the names in each one.",
         ),
         Group::Other => Some(
             "Flags you always want go in ~/.config/syk/config, written as you would type them. syk -U -h has the details.",

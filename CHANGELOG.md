@@ -7,7 +7,7 @@
 - `-g` skips a group: `build`, `lock`, `min` and `media` exist next to the two above, `-g min:content` leaves only the contents unsearched, and `-g 'name=a,b'` makes a group of your own.
 - `-u` searches a group again, and `-I` and `-a` switch every group off.
 - `-x` lists the groups that are skipped and the names in them.
-- When nothing is found, a line on the terminal says how many files had their contents left out.
+- When lines in a lock file match, a line on the terminal says how many are not shown.
 
 ## 0.1.1
 

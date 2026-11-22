@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use grep_matcher::Matcher;
+use grep_searcher::sinks::Bytes;
 use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
 use ignore::overrides::{Override, OverrideBuilder};
 use ignore::{DirEntry, WalkBuilder, WalkState};
@@ -107,7 +108,13 @@ struct Tally {
     lines: u64,
     files: u64,
     names: u64,
-    unread: u64,
+    withheld: Withheld,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Withheld {
+    files: u64,
+    lines: u64,
 }
 
 impl Tally {
@@ -117,7 +124,8 @@ impl Tally {
         self.lines += other.lines;
         self.files += other.files;
         self.names += other.names;
-        self.unread += other.unread;
+        self.withheld.files += other.withheld.files;
+        self.withheld.lines += other.withheld.lines;
     }
 }
 
@@ -163,6 +171,7 @@ struct Job {
     hit: Option<(usize, usize)>,
     named: bool,
     plain: bool,
+    muted: bool,
 }
 
 struct Waiting {
@@ -415,17 +424,17 @@ impl<'a> Worker<'a> {
                 (hit, content.is_none())
             }
         };
-        let unread = kind.is_file()
+        let muted = kind.is_file()
             && shared.plan.content().is_some()
             && shared.unread.by_name()
             && self.unread(entry);
-        self.tally.unread += u64::from(unread);
         let job = Job {
             hit: hit.flatten(),
             named: alone && hit.is_some(),
-            plain: kind.is_file() && !unread,
+            plain: kind.is_file() && !muted,
+            muted,
         };
-        (job.named || (job.plain && shared.plan.content().is_some())).then_some(job)
+        (job.named || job.muted || (job.plain && shared.plan.content().is_some())).then_some(job)
     }
 
     fn unread(&self, entry: &DirEntry) -> bool {
@@ -436,6 +445,27 @@ impl<'a> Worker<'a> {
             .rsplit(|byte| *byte == b'/')
             .take(entry.depth())
             .any(|part| self.shared.unread.matches(part))
+    }
+
+    fn weigh(&mut self, entry: &DirEntry) {
+        let Some(pattern) = self.shared.plan.content() else {
+            return;
+        };
+        let mut lines = 0;
+        let count = Bytes(|_, _| {
+            lines += 1;
+            Ok(true)
+        });
+        let searched = if pattern.single() {
+            self.searcher
+                .search_path(pattern.lines(), entry.path(), count)
+        } else {
+            self.searcher.search_path(pattern, entry.path(), count)
+        };
+        if searched.is_ok() && lines > 0 {
+            self.tally.withheld.files += 1;
+            self.tally.withheld.lines += lines;
+        }
     }
 
     fn file(&mut self, entry: &DirEntry, job: Job, loaded: Option<io::Result<Loaded>>) {
@@ -453,6 +483,9 @@ impl<'a> Worker<'a> {
         let Some(pattern) = shared.plan.content().filter(|_| job.plain) else {
             if named {
                 self.path_line(&item, true);
+            }
+            if job.muted && !shared.gather {
+                self.weigh(entry);
             }
             return;
         };
@@ -1319,7 +1352,9 @@ pub fn run(query: Query) -> ExitCode {
             "syk: the group {group} is skipped, and {name} belongs to it. Add -u {group} to search it."
         );
     }
-    if !found && tally.unread > 0 && io::stderr().is_terminal() {
+    let Withheld { files, lines } = tally.withheld;
+    let acting = query.output.best || query.output.browse || query.output.acts();
+    if lines > 0 && !acting && (io::stderr().is_terminal() || query.output.stats) {
         let groups: Vec<&str> = query
             .filters
             .groups
@@ -1327,12 +1362,19 @@ pub fn run(query: Query) -> ExitCode {
             .filter(|group| group.skip == Skip::Contents)
             .map(|group| group.name.as_str())
             .collect();
+        let matching = match (found, lines) {
+            (true, 1) => "1 more line matches".to_string(),
+            (true, _) => format!("{} more lines match", grouped(lines)),
+            (false, 1) => "1 line matches".to_string(),
+            (false, _) => format!("{} lines match", grouped(lines)),
+        };
         eprintln!(
-            "syk: the contents of {} in the {} {} were not searched. Add -u {} to search them.",
-            counted(tally.unread, "file", "files"),
+            "syk: {matching} in {} of the {} {}, which is not shown. Add -u {} to see {}.",
+            counted(files, "file", "files"),
             if groups.len() == 1 { "group" } else { "groups" },
             groups.join(" and "),
-            groups.join(",")
+            groups.join(","),
+            if lines == 1 { "it" } else { "them" }
         );
     }
     if let Some(expanded) = &query.expanded

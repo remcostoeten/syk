@@ -431,6 +431,28 @@ fn lock_files_are_found_by_name_but_their_contents_are_not_searched() {
         ]
     );
 
+    let noted = |args: &[&str]| fixture.errors(&[&["-T"], args].concat());
+    assert!(
+        noted(&["-c", "needle"])
+            .contains("2 more lines match in 2 files of the group lock, which is not shown. Add -u lock to see them.")
+    );
+    assert!(noted(&["-c", "locked"]).contains("2 lines match in 2 files of the group lock"));
+    assert!(noted(&["-c", "needle", "-D", "1"]).contains(
+        "1 line matches in 1 file of the group lock, which is not shown. Add -u lock to see it."
+    ));
+    for quiet in [
+        &["-c", "needle", "-u", "lock"][..],
+        &["-c", "needle", "-g", "lock"],
+        &["-c", "plain"],
+        &["-n", "lock"],
+    ] {
+        assert!(
+            !noted(quiet).contains("not shown"),
+            "{quiet:?} mentions lock files"
+        );
+    }
+    assert!(fixture.errors(&["-c", "needle"]).is_empty());
+
     assert_eq!(
         listed(&["-g", "fixtures:content=fixtures"]),
         [sources[0], sources[1]]

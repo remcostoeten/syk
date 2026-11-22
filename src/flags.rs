@@ -278,7 +278,7 @@ pub static FLAGS: [Flag; 48] = [
                 "search ignored files, except node_modules",
             ),
         ],
-        related: &[Id::Ext, Id::NoIgnore, Id::Depth],
+        related: &[Id::Ext, Id::Ignore, Id::NoIgnore, Id::Depth],
     },
     Flag {
         id: Id::Size,
@@ -428,7 +428,7 @@ pub static FLAGS: [Flag; 48] = [
         arity: Arity::Switch,
         group: Group::Walk,
         summary: "Include hidden files and folders.",
-        detail: "Entries whose name starts with a dot are skipped by default. -H includes them, except for the inside of .git folders. Use -a to search those too.",
+        detail: "Entries whose name starts with a dot are skipped by default. -H includes them, except for the inside of .git folders. Use -a to search those too. Hidden names in a group that is skipped, such as .venv and .next, stay out until -u or -a includes them.",
         examples: &[
             ("syk -H env", "also finds .env and .envrc"),
             ("syk -c token -H", "search dotfiles as well"),
@@ -461,7 +461,7 @@ pub static FLAGS: [Flag; 48] = [
         arity: Arity::Switch,
         group: Group::Walk,
         summary: "Include hidden and ignored entries.",
-        detail: "The same as -H -I, and it also enters .git folders. Binary files are still skipped when searching contents.",
+        detail: "The same as -H -I, and it also enters .git folders. Every group of -g is switched off as well. Binary files are still skipped when searching contents.",
         examples: &[(
             "syk -a secret",
             "search everything below the current folder",
@@ -476,7 +476,7 @@ pub static FLAGS: [Flag; 48] = [
         arity: Arity::Required("GROUPS"),
         group: Group::Walk,
         summary: "Skip a named group of files, such as lock.",
-        detail: "A group is a list of names that belong together, such as the folders that package managers fill. Give several separated by commas, or repeat the flag. deps and cache are skipped without asking, lock files are found by name but their contents are not searched, and the other groups are skipped when you name them. A flag in the config file makes it the default.\n\ndeps, skipped by default: node_modules, bower_components, jspm_packages, site-packages, venv, .venv, Pods, .pnpm-store.\n\ncache, skipped by default: __pycache__, *.pyc, *.pyo, .cache, .pytest_cache, .mypy_cache, .ruff_cache, .tox, .gradle, .turbo, .parcel-cache, .sass-cache, .eslintcache, .next, .nuxt, .svelte-kit, .DS_Store, Thumbs.db.\n\nbuild: target, dist, build, out, _build, coverage, *.o, *.class.\n\nlock, contents not searched by default: package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lock, bun.lockb, Cargo.lock, composer.lock, Gemfile.lock, poetry.lock, uv.lock, Pipfile.lock, go.sum, flake.lock, mix.lock, pubspec.lock, Podfile.lock.\n\nmin: *.min.js, *.min.css, *.map.\n\nmedia: *.png, *.jpg, *.jpeg, *.gif, *.webp, *.avif, *.ico, *.bmp, *.svg, *.mp3, *.wav, *.ogg, *.flac, *.mp4, *.mov, *.mkv, *.webm, *.avi, *.woff, *.woff2, *.ttf, *.otf, *.eot.\n\nall stands for every group. A name is matched whole and at any depth, and *.ext matches the end of a name. A folder that matches is not entered, but a path you give yourself is always searched. -I and -a switch every group off.\n\nAdd :content to a name to keep finding the names and leave only the contents unsearched: -g min:content. That is how lock starts out, and -g lock hides the lock files as well.\n\nA value with an = sign makes a group of your own and skips it: -g 'snapshots=__snapshots__,*.snap'. With += the names are added to a group that exists: -g deps+=vendor. Any other pattern in a group of your own is read the way -E reads it, unless the group has :content.",
+        detail: "A group is a list of names that belong together, such as the folders that package managers fill. Give several separated by commas, or repeat the flag. deps and cache are skipped without asking, lock files are found by name but their contents are not searched, and the other groups are skipped when you name them. A flag in the config file makes it the default.\n\ndeps, skipped by default: node_modules, bower_components, jspm_packages, site-packages, venv, .venv, Pods, .pnpm-store.\n\ncache, skipped by default: __pycache__, *.pyc, *.pyo, .cache, .pytest_cache, .mypy_cache, .ruff_cache, .tox, .gradle, .turbo, .parcel-cache, .sass-cache, .eslintcache, .next, .nuxt, .svelte-kit, .DS_Store, Thumbs.db.\n\nbuild: target, dist, build, out, _build, coverage, *.o, *.class.\n\nlock, contents not searched by default: package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lock, bun.lockb, Cargo.lock, composer.lock, Gemfile.lock, poetry.lock, uv.lock, Pipfile.lock, go.sum, flake.lock, mix.lock, pubspec.lock, Podfile.lock.\n\nmin: *.min.js, *.min.css, *.map.\n\nmedia: *.png, *.jpg, *.jpeg, *.gif, *.webp, *.avif, *.ico, *.bmp, *.svg, *.mp3, *.wav, *.ogg, *.flac, *.mp4, *.mov, *.mkv, *.webm, *.avi, *.woff, *.woff2, *.ttf, *.otf, *.eot.\n\nall stands for every group. A name is matched whole and at any depth, and *.ext matches the end of a name. A folder that matches is not entered, but a path you give yourself is always searched. -I and -a switch every group off.\n\nAdd :content to a name to keep finding the names and leave only the contents unsearched: -g min:content. That is how lock starts out, and -g lock hides the lock files as well. When lines in such a file match, a line on the terminal says how many are not shown.\n\nA value with an = sign makes a group of your own and skips it: -g 'snapshots=__snapshots__,*.snap'. With += the names are added to a group that exists: -g deps+=vendor. Any other pattern in a group of your own is read the way -E reads it, unless the group has :content.",
         examples: &[
             ("syk -n -g lock", "list names without the lock files"),
             (

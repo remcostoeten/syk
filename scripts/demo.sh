@@ -507,7 +507,7 @@ section_matching() {
 }
 
 section_walk() {
-    heading "Where to look" "Hidden files, ignored files and binary files are skipped unless you ask for them."
+    heading "Where to look" "Hidden files, ignored files, binary files and dependency folders are skipped unless you ask for them."
     run "AUTH_TOKEN is also in .env, but hidden files are skipped." \
         "syk -c AUTH_TOKEN" \
         "Only config.ts is shown."

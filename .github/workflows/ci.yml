@@ -3,7 +3,9 @@ name: CI
 on:
   push:
     branches: [master]
+    paths-ignore: ["**.md", "docs/**", "packaging/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "packaging/**", "LICENSE"]
 
 permissions:
   contents: read
@@ -27,9 +29,11 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
       - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
-      - run: cargo test
+      - run: cargo test --locked
       - run: scripts/demo.sh --fast
         env:
           SYK: ${{ github.workspace }}/target/debug/syk

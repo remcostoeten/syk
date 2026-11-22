@@ -5,6 +5,7 @@ mod explain;
 mod filter;
 mod flags;
 mod help;
+mod load;
 mod output;
 mod pager;
 mod parse;

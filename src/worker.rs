@@ -116,6 +116,13 @@ impl Shared {
         Some(content.need())
     }
 
+    fn hit(&self) {
+        // A store on every result makes the threads fight over one cache line
+        if !self.found.load(Ordering::Relaxed) {
+            self.found.store(true, Ordering::Relaxed);
+        }
+    }
+
     pub fn fail(&self, message: impl std::fmt::Display) {
         self.failed.store(true, Ordering::Relaxed);
         if !self.quiet {
@@ -583,7 +590,7 @@ impl<'a> Worker<'a> {
         }
         self.tally.read += u64::from(!spared);
         if hits > 0 {
-            shared.found.store(true, Ordering::Relaxed);
+            shared.hit();
             self.line = first;
             self.tally.files += 1;
             if shared.layout != Layout::List {
@@ -606,7 +613,7 @@ impl<'a> Worker<'a> {
         }
         write_entry(&mut self.out, entry, self.shared.style());
         self.tally.names += u64::from(named);
-        self.shared.found.store(true, Ordering::Relaxed);
+        self.shared.hit();
     }
 
     fn count_line(&mut self, entry: &Entry<'_>, count: u64) {

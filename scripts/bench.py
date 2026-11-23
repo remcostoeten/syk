@@ -23,8 +23,9 @@ METHOD = (
     "of a content search. It uses posix_fadvise, which needs no root. Folder listings "
     "stay in memory, so this measures reading files from disk and not listing them. "
     "syk walks the folders, like the other tools. syk index is syk with an index of "
-    "names that was built before the timing, in a temporary cache folder. It is left "
-    "out where no index can be built. --html writes the results as a page with charts."
+    "names and of the text in files that was built before the timing, in a temporary "
+    "cache folder. It is left out where no index can be built. --html writes the "
+    "results as a page with charts."
 )
 INDEX = "syk index"
 SECTIONS = (

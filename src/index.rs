@@ -320,6 +320,10 @@ impl Index {
         self.folders
     }
 
+    pub fn root(&self) -> &Path {
+        Path::new(OsStr::from_bytes(&self.map[self.root.clone()]))
+    }
+
     pub fn built(&self) -> i64 {
         self.built
     }

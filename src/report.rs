@@ -6,7 +6,7 @@ use crate::output::Layout;
 use crate::query::{Plan, Query, Terms};
 use crate::worker::{Tally, Withheld};
 
-fn grouped(number: u64) -> String {
+pub fn grouped(number: u64) -> String {
     let digits = number.to_string();
     let mut out = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, digit) in digits.chars().enumerate() {

@@ -240,7 +240,7 @@ fn encode(draft: &Draft, real: &Path, print: &str, started: i64) -> Vec<u8> {
     out
 }
 
-fn prune(store: &Path) {
+pub fn prune(store: &Path) {
     let Ok(listing) = fs::read_dir(store) else {
         return;
     };

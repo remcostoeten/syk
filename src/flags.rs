@@ -21,6 +21,7 @@ pub enum Id {
     Unignore,
     Index,
     NoIndex,
+    Indexes,
     Follow,
     List,
     Max,
@@ -165,7 +166,7 @@ fn distance(left: &str, right: &str) -> usize {
     row[right.len()]
 }
 
-pub static FLAGS: [Flag; 50] = [
+pub static FLAGS: [Flag; 51] = [
     Flag {
         id: Id::Name,
         short: 'n',
@@ -857,7 +858,7 @@ pub static FLAGS: [Flag; 50] = [
             ("syk -y", "index the current folder"),
             ("syk -y ~/", "index your home folder"),
         ],
-        related: &[Id::NoIndex, Id::Stats],
+        related: &[Id::NoIndex, Id::Indexes, Id::Stats],
     },
     Flag {
         id: Id::NoIndex,
@@ -869,7 +870,25 @@ pub static FLAGS: [Flag; 50] = [
         summary: "Search without the index.",
         detail: "Walks the folders as they are now and neither reads nor builds an index. The results are the same either way, so this is for measuring, or for a file system where the times of folders cannot be trusted. Put it in the config file to switch indexes off for good.",
         examples: &[("syk -n config -Y ~/", "walk the whole tree")],
-        related: &[Id::Index],
+        related: &[Id::Index, Id::Indexes],
+    },
+    Flag {
+        id: Id::Indexes,
+        short: 'A',
+        long: "indexes",
+        aliases: &["indices"],
+        arity: Arity::Optional("ACTION"),
+        group: Group::Other,
+        summary: "List, clear or prune the stored indexes.",
+        detail: "Without ACTION, or with list, it shows every index with its size, the number of entries, when it was built and its folder. Give a folder as a path to see only that one.\n\nclear removes every index, or only the ones of the folders given as paths. prune removes the indexes whose folder no longer exists and the ones this version cannot read.\n\nRemoving an index changes no results. The next search of a large folder walks it and builds a new index in the background, unless -Y is in the config file. A build that is running finishes and leaves its index.",
+        examples: &[
+            ("syk -A", "every index and its size"),
+            ("syk -A ~/code", "the index of one folder"),
+            ("syk -A clear", "remove every index"),
+            ("syk -A clear ~/code", "remove the index of one folder"),
+            ("syk -A prune", "remove indexes of folders that are gone"),
+        ],
+        related: &[Id::Index, Id::NoIndex],
     },
     Flag {
         id: Id::NoPager,

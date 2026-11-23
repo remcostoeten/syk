@@ -14,6 +14,7 @@ mod index;
 mod item;
 mod kept;
 mod load;
+mod manage;
 mod need;
 mod output;
 mod pager;
@@ -125,6 +126,7 @@ fn main() -> ExitCode {
             Err(error) => fail(&error),
         },
         Ok(Outcome::Setup(shell)) => setup::run(shell.as_deref()),
+        Ok(Outcome::Indexes(action, paths)) => manage::run(action, &paths),
         Ok(Outcome::Usage) => {
             help::print_welcome();
             ExitCode::from(2)

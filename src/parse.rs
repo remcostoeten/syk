@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::filter::{self, Parsed};
 use crate::flags::{self, Arity, Flag, Id};
 use crate::group;
+use crate::manage::Action;
 use crate::query::{
     Case, Defaults, Expanded, Filters, Format, Kind, Matching, Output, Plan, Query, Targets, Terms,
     Walk,
@@ -16,6 +17,7 @@ pub enum Outcome {
     Picks,
     Init(String),
     Setup(Option<String>),
+    Indexes(Action, Vec<PathBuf>),
     Usage,
 }
 
@@ -55,6 +57,7 @@ struct Draft {
     picks: bool,
     init: Option<String>,
     setup: Option<Option<String>>,
+    indexes: Option<Action>,
     no_config: bool,
     inherited: bool,
 }
@@ -108,6 +111,7 @@ fn read(raw: Vec<OsString>, inherited: usize) -> Result<Outcome, String> {
         picks: false,
         init: None,
         setup: None,
+        indexes: None,
         no_config: false,
         inherited: false,
     };
@@ -161,6 +165,10 @@ fn read(raw: Vec<OsString>, inherited: usize) -> Result<Outcome, String> {
     }
     if let Some(shell) = draft.setup.take() {
         return Ok(Outcome::Setup(shell));
+    }
+    if let Some(action) = draft.indexes.take() {
+        let paths = draft.words.iter().map(|word| PathBuf::from(&word.raw));
+        return Ok(Outcome::Indexes(action, paths.collect()));
     }
     draft.finish().map(|query| Outcome::Run(Box::new(query)))
 }
@@ -355,6 +363,7 @@ impl Draft {
                     | Id::NoConfig
                     | Id::Explain
                     | Id::Index
+                    | Id::Indexes
             )
         {
             return Err(format!(
@@ -413,6 +422,7 @@ impl Draft {
             Id::Threads => self.walk.threads = number(flag, text)?,
             Id::Index => self.walk.index = true,
             Id::NoIndex => self.walk.no_index = true,
+            Id::Indexes => self.indexes = Some(Action::of(text)?),
             Id::Plain => self.output.format = Format::Plain,
             Id::Pretty => self.output.format = Format::Pretty,
             Id::Explain => self.output.explain = true,

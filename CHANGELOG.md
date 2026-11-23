@@ -6,6 +6,7 @@
 - The index also holds a signature of the text of every file. A search of contents does not read the files that cannot hold its pattern, after checking that they did not change since the index was built. `-T` says how many files that were.
 - On Linux, syk lists folders with a walker of its own and applies the ignore rules with the same matchers as before. `-L` and `-o` still use the walker of the `ignore` crate.
 - `-y` builds an index right away, `-Y` searches without one, and `-T` says whether the names came from an index.
+- `-A` lists the stored indexes with their size, age and folder. `-A clear` removes all of them or those of the given folders, and `-A prune` removes those whose folder is gone.
 - Groups of names are skipped as a whole. `deps` (node_modules, venv and other dependency folders) and `cache` (__pycache__, .next and other caches) are skipped without asking, also where no ignore file lists them.
 - Lock files (`lock`) are found by name, but their contents are not searched.
 - `-g` skips a group: `build`, `lock`, `min` and `media` exist next to the two above, `-g min:content` leaves only the contents unsearched, and `-g 'name=a,b'` makes a group of your own.

@@ -198,3 +198,54 @@ fn an_index_with_many_changed_files_is_built_again() {
     }
     assert!(index() > built, "the index was not built again");
 }
+
+#[test]
+fn stored_indexes_can_be_listed_and_removed() {
+    let fixture = Fixture::new();
+    let stored = |fixture: &Fixture| {
+        fs::read_dir(fixture.data().join("syk/index"))
+            .map(|listing| {
+                listing
+                    .flatten()
+                    .filter(|entry| entry.path().extension().is_some_and(|kind| kind == "idx"))
+                    .count()
+            })
+            .unwrap_or(0)
+    };
+    assert!(fixture.run(&["-A"]).0.starts_with("No indexes in"));
+
+    assert_eq!(fixture.run(&["-y", "src/"]).1, 0);
+    assert_eq!(fixture.run(&["-y", "needle/"]).1, 0);
+    let (listed, status) = fixture.run(&["-A"]);
+    assert_eq!(status, 0);
+    assert!(listed.contains("2 indexes"), "{listed}");
+    assert!(fixture.run(&["-A", "./src"]).0.contains("1 index,"));
+    assert_eq!(fixture.run(&["-A", "./notes.log"]).1, 1);
+
+    assert_eq!(fixture.run(&["-A", "clear", "./src"]).1, 0);
+    assert_eq!(stored(&fixture), 1);
+
+    fs::remove_dir_all(fixture.root.join("needle")).expect("remove folder");
+    assert!(fixture.run(&["-A"]).0.contains("folder is gone"));
+    assert!(
+        fixture
+            .run(&["-A", "prune"])
+            .0
+            .starts_with("Removed 1 index")
+    );
+    assert_eq!(stored(&fixture), 0);
+
+    assert_eq!(fixture.run(&["-y"]).1, 0);
+    assert!(
+        fixture
+            .run(&["-A", "clear"])
+            .0
+            .starts_with("Removed 1 index")
+    );
+    assert_eq!(stored(&fixture), 0);
+    assert!(
+        fixture
+            .errors(&["-A", "wipe"])
+            .contains("list, clear or prune")
+    );
+}

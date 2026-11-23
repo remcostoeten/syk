@@ -152,3 +152,49 @@ fn files_that_cannot_match_are_not_read_until_they_change() {
     assert_eq!(found, search(&["-u", "lock", "-Y"]).0);
     assert!(stats.contains("5 files could not match"), "{stats}");
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_index_with_many_changed_files_is_built_again() {
+    let fixture = Fixture::new();
+    for file in 0..200 {
+        fixture.file(&format!("many/file{file}.txt"), "plain words\n");
+    }
+    std::thread::sleep(Duration::from_millis(2100));
+    assert_eq!(fixture.run(&["-y"]).1, 0);
+    let place = || {
+        let listing = fs::read_dir(fixture.data().join("syk/index")).expect("an index folder");
+        let found = listing
+            .flatten()
+            .find(|entry| entry.path().extension().is_some_and(|kind| kind == "idx"));
+        found.expect("an index").path()
+    };
+    let index = || {
+        let metadata = fs::metadata(place()).expect("its metadata");
+        metadata.modified().expect("a modification time")
+    };
+    let aged = index() - Duration::from_secs(120);
+    fs::File::options()
+        .write(true)
+        .open(place())
+        .and_then(|file| file.set_modified(aged))
+        .expect("make the index older");
+    let built = index();
+    for file in 0..100 {
+        fixture.file(&format!("many/file{file}.txt"), "other words\n");
+    }
+    std::thread::sleep(Duration::from_millis(1100));
+    let stats = fixture.errors(&["-c", "needle", "-T", "-p", "-l"]);
+    assert!(stats.contains("could not match"), "{stats}");
+    assert_eq!(index(), built);
+    for file in 100..180 {
+        fixture.file(&format!("many/file{file}.txt"), "other words\n");
+    }
+    let (found, status) = fixture.run(&["-c", "needle", "-p", "-l"]);
+    assert_eq!((found.lines().count(), status), (2, 0));
+    let started = std::time::Instant::now();
+    while index() == built && started.elapsed() < Duration::from_secs(20) {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(index() > built, "the index was not built again");
+}

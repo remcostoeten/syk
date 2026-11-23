@@ -65,6 +65,7 @@ pub struct Tally {
     pub files: u64,
     pub names: u64,
     pub spared: u64,
+    pub lapsed: u64,
     pub withheld: Withheld,
 }
 
@@ -75,6 +76,10 @@ pub struct Withheld {
 }
 
 impl Tally {
+    pub fn worn(&self) -> bool {
+        self.lapsed >= 2048 || (self.lapsed >= 128 && self.lapsed * 32 >= self.spared)
+    }
+
     fn add(&mut self, other: Tally) {
         self.entries += other.entries;
         self.read += other.read;
@@ -82,6 +87,7 @@ impl Tally {
         self.files += other.files;
         self.names += other.names;
         self.spared += other.spared;
+        self.lapsed += other.lapsed;
         self.withheld.files += other.withheld.files;
         self.withheld.lines += other.withheld.lines;
     }
@@ -276,10 +282,12 @@ impl<'a> Worker<'a> {
     }
 
     fn spared(&mut self, entry: &Item<'_>, muted: bool) -> bool {
-        let spared = entry
-            .ruled
-            .is_some_and(|ruled| !(muted && ruled.binary) && ruled.holds(entry.path()));
+        let Some(ruled) = entry.ruled.filter(|ruled| !(muted && ruled.binary)) else {
+            return false;
+        };
+        let spared = ruled.holds(entry.path());
         self.tally.spared += u64::from(spared);
+        self.tally.lapsed += u64::from(!spared);
         spared
     }
 

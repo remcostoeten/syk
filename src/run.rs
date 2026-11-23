@@ -207,7 +207,8 @@ pub fn run(query: Query) -> ExitCode {
     let mut first = search(&query, plan, view, Pass::First, keep);
     let failed = first.failed;
     let large = first.advice == Advice::Large && first.tally.entries >= BIG;
-    let build = (large || first.advice == Advice::Build) && !stop::asked();
+    let stale = first.advice == Advice::Build || first.tally.worn();
+    let build = (large || stale) && !stop::asked();
     let habits = habits.and_then(|loading| loading.join().ok());
     if let Some(habits) = &habits {
         let extra = remembered(&query, habits, &first.blocks, view);

@@ -699,6 +699,21 @@ impl crate::crawl::Sink for Worker<'_> {
     fn take(&mut self, visit: Visit<'_>) -> bool {
         Worker::take(self, visit)
     }
+
+    fn heavy(&self, name: &[u8], form: Form) -> bool {
+        let filters = &self.shared.filters;
+        let kind = match filters.kind {
+            Some(Kind::Dir) => false,
+            Some(Kind::File) => form.is_file(),
+            Some(Kind::Link) => form.is_symlink(),
+            None => true,
+        };
+        let extensions = &filters.extensions;
+        kind && (extensions.is_empty()
+            || extensions
+                .iter()
+                .any(|extension| ends_with(name, extension.as_bytes())))
+    }
 }
 
 impl Drop for Worker<'_> {

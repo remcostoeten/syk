@@ -125,7 +125,18 @@ fn handful(shared: &Shared, found: Vec<Found>, threads: usize) {
 
 #[cfg(target_os = "linux")]
 fn crawled(shared: &Shared, query: &Query) -> bool {
-    crate::crawl::crawl(query, &|| threads(query), &|| Worker::new(shared, AHEAD))
+    let (few, batch) = match (shared.plan.content().is_some(), shared.stat) {
+        (true, _) => (FEW, 1),
+        (false, true) => (FEW, 8),
+        (false, false) => (FEW * 8, 0),
+    };
+    let pace = crate::crawl::Pace {
+        few: few as u64,
+        batch,
+    };
+    crate::crawl::crawl(query, pace, &|| threads(query), &|| {
+        Worker::new(shared, AHEAD)
+    })
 }
 
 #[cfg(not(target_os = "linux"))]

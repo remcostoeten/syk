@@ -14,13 +14,13 @@ use crate::item::{Form, Item};
 use crate::query::Query;
 use crate::rule::{Base, Layer, Rules, Seen};
 
-const FEW: u64 = 128;
 const PATIENCE: Duration = Duration::from_millis(2);
 const ROOM: usize = 32 * 1024;
 const HEAD: usize = 19;
 
 pub trait Sink {
     fn take(&mut self, visit: Visit<'_>) -> bool;
+    fn heavy(&self, name: &[u8], form: Form) -> bool;
 }
 
 struct Folder {
@@ -30,11 +30,29 @@ struct Folder {
     layer: Option<Arc<Layer>>,
 }
 
+#[derive(Default)]
+struct Files {
+    paths: Vec<u8>,
+    marks: Vec<(usize, usize, Form)>,
+    depth: usize,
+}
+
+enum Task {
+    Folder(Folder),
+    Files(Files),
+}
+
+pub struct Pace {
+    pub few: u64,
+    pub batch: usize,
+}
+
 struct Pool {
     rules: Rules,
     bases: Vec<Base>,
     depth: Option<usize>,
-    queue: Mutex<Vec<Folder>>,
+    batch: usize,
+    queue: Mutex<Vec<Task>>,
     wake: Condvar,
     open: AtomicUsize,
     idle: AtomicUsize,
@@ -75,7 +93,7 @@ fn form(kind: u8, path: &Path) -> io::Result<Form> {
 struct Crew<'a, S> {
     pool: &'a Pool,
     sink: S,
-    local: Vec<Folder>,
+    local: Vec<Task>,
     chunk: Vec<u8>,
     listing: Vec<u8>,
     path: Vec<u8>,
@@ -95,21 +113,21 @@ impl<'a, S: Sink> Crew<'a, S> {
         }
     }
 
-    fn next(&mut self) -> Option<Folder> {
+    fn next(&mut self) -> Option<Task> {
         let pool = self.pool;
         if pool.quit.load(Ordering::Relaxed) {
             return None;
         }
-        if let Some(folder) = self.local.pop() {
-            return Some(folder);
+        if let Some(task) = self.local.pop() {
+            return Some(task);
         }
         let mut queue = pool.queue.lock().ok()?;
         loop {
             if pool.quit.load(Ordering::SeqCst) {
                 return None;
             }
-            if let Some(folder) = queue.pop() {
-                return Some(folder);
+            if let Some(task) = queue.pop() {
+                return Some(task);
             }
             if pool.open.load(Ordering::SeqCst) == 0 {
                 return None;
@@ -220,6 +238,7 @@ impl<'a, S: Sink> Crew<'a, S> {
             self.path.push(b'/');
         }
         let stem = self.path.len();
+        let mut files = Files::default();
         for (kind, name) in entries(&self.listing) {
             self.seen += 1;
             self.path.truncate(stem);
@@ -244,12 +263,22 @@ impl<'a, S: Sink> Crew<'a, S> {
             }
             if folded {
                 pool.open.fetch_add(1, Ordering::SeqCst);
-                self.local.push(Folder {
+                self.local.push(Task::Folder(Folder {
                     path: self.path.clone(),
                     depth: folder.depth + 1,
                     root: folder.root,
                     layer: layer.clone(),
-                });
+                }));
+                continue;
+            }
+            if pool.batch > 0 && self.sink.heavy(name, form) {
+                files.paths.extend(&self.path);
+                files.marks.push((files.paths.len(), name.len(), form));
+                if files.marks.len() == pool.batch {
+                    files.depth = folder.depth + 1;
+                    pool.open.fetch_add(1, Ordering::SeqCst);
+                    self.local.push(Task::Files(std::mem::take(&mut files)));
+                }
                 continue;
             }
             let entry = Item {
@@ -264,6 +293,11 @@ impl<'a, S: Sink> Crew<'a, S> {
                 return false;
             }
         }
+        if !files.marks.is_empty() {
+            files.depth = folder.depth + 1;
+            pool.open.fetch_add(1, Ordering::SeqCst);
+            self.local.push(Task::Files(files));
+        }
         match broken {
             Some(error) => {
                 let failure = format!("{}: {error}", path.display());
@@ -273,11 +307,29 @@ impl<'a, S: Sink> Crew<'a, S> {
         }
     }
 
+    fn visit(&mut self, files: Files) -> bool {
+        let mut start = 0;
+        files.marks.iter().all(|(end, name, form)| {
+            let path = &files.paths[start..*end];
+            start = *end;
+            self.sink.take(Visit::Entry(Item {
+                path: Path::new(OsStr::from_bytes(path)),
+                name: OsStr::from_bytes(&path[path.len() - name..]),
+                depth: files.depth,
+                form: *form,
+                follow: false,
+                ruled: None,
+            }))
+        })
+    }
+
     fn step(&mut self) -> bool {
-        let Some(folder) = self.next() else {
-            return false;
+        let done = match self.next() {
+            Some(Task::Folder(folder)) => self.list(folder),
+            Some(Task::Files(files)) => self.visit(files),
+            None => return false,
         };
-        if !self.list(folder) {
+        if !done {
             self.pool.stop();
             return false;
         }
@@ -289,6 +341,7 @@ impl<'a, S: Sink> Crew<'a, S> {
 
 pub fn crawl<S: Sink>(
     query: &Query,
+    pace: Pace,
     threads: &dyn Fn() -> usize,
     make: &(dyn Fn() -> S + Sync),
 ) -> bool {
@@ -302,16 +355,19 @@ pub fn crawl<S: Sink>(
         .iter()
         .map(|root| Base::new(root, rules.active()))
         .collect();
-    let roots = query.roots.iter().enumerate().map(|(root, path)| Folder {
-        path: path.as_os_str().as_bytes().to_vec(),
-        depth: 0,
-        root,
-        layer: None,
+    let roots = query.roots.iter().enumerate().map(|(root, path)| {
+        Task::Folder(Folder {
+            path: path.as_os_str().as_bytes().to_vec(),
+            depth: 0,
+            root,
+            layer: None,
+        })
     });
     let pool = Pool {
         rules,
         bases,
         depth: query.walk.depth,
+        batch: pace.batch,
         queue: Mutex::new(roots.rev().collect()),
         wake: Condvar::new(),
         open: AtomicUsize::new(query.roots.len()),
@@ -323,7 +379,7 @@ pub fn crawl<S: Sink>(
         let mut lead = Crew::new(&pool, make());
         let mut alone = true;
         while lead.step() {
-            if alone && (lead.seen > FEW || started.elapsed() > PATIENCE) {
+            if alone && (lead.seen > pace.few || started.elapsed() > PATIENCE) {
                 alone = false;
                 for _ in 1..threads() {
                     scope.spawn(|| {
@@ -368,6 +424,10 @@ mod tests {
             };
             self.found.lock().expect("a lock").push(found);
             true
+        }
+
+        fn heavy(&self, name: &[u8], _: Form) -> bool {
+            name.len().is_multiple_of(2)
         }
     }
 
@@ -478,7 +538,11 @@ mod tests {
     fn both(flags: &[&str], root: &str) -> Option<(Vec<Found>, Vec<Found>)> {
         let query = query(flags, root);
         let crawled = Mutex::new(Vec::new());
-        if !crawl(&query, &|| 4, &|| Gather { found: &crawled }) {
+        let pace = Pace {
+            few: 8,
+            batch: flags.len() % 3,
+        };
+        if !crawl(&query, pace, &|| 4, &|| Gather { found: &crawled }) {
             return None;
         }
         let walked = Mutex::new(Vec::new());
@@ -560,7 +624,10 @@ mod tests {
         let found = Mutex::new(Vec::new());
         let tried = |flags: &[&str], name: &str| {
             let root = base.join(name).display().to_string();
-            crawl(&query(flags, &root), &|| 2, &|| Gather { found: &found })
+            let pace = Pace { few: 8, batch: 2 };
+            crawl(&query(flags, &root), pace, &|| 2, &|| Gather {
+                found: &found,
+            })
         };
         assert!(!tried(&[], "file") && !tried(&[], "link") && !tried(&[], "missing"));
         assert!(!tried(&["-L"], "real") && found.lock().expect("a lock").is_empty());

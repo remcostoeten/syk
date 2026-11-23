@@ -840,7 +840,7 @@ pub static FLAGS: [Flag; 50] = [
         arity: Arity::Required("N"),
         group: Group::Other,
         summary: "Use N worker threads.",
-        detail: "The default is the number of CPU cores, up to twelve. A tree of up to 128 entries starts on one thread, and the others join only when the search takes longer than two milliseconds. -j 1 searches on a single thread.",
+        detail: "The default is the number of CPU cores, up to twelve. A search starts on one thread. The others join after 128 entries when contents are searched and after 1,024 when only names are, or when the search takes longer than two milliseconds. -j 1 searches on a single thread.",
         examples: &[("syk foo -j 4", "use four threads")],
         related: &[Id::Sort],
     },

@@ -10,6 +10,7 @@ pub struct Query {
     pub walk: Walk,
     pub output: Output,
     pub expanded: Option<Expanded>,
+    pub piped: bool,
     pub no_config: bool,
     pub defaults: Option<Defaults>,
 }

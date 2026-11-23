@@ -5,6 +5,7 @@ use crate::filter::{self, Parsed};
 use crate::flags::{self, Arity, Flag, Id};
 use crate::group;
 use crate::manage::Action;
+use crate::piped::LABEL;
 use crate::query::{
     Case, Defaults, Expanded, Filters, Format, Kind, Matching, Output, Plan, Query, Targets, Terms,
     Walk,
@@ -479,9 +480,14 @@ impl Draft {
         let mut either: Vec<Word> = Vec::new();
         let mut roots: Vec<PathBuf> = Vec::new();
         let mut first_forced = true;
+        let mut piped = false;
         for word in std::mem::take(&mut self.words) {
             if word.text.is_empty() {
                 return Err("one of the words is empty, and an empty pattern matches everything. A variable that holds no text gives this. To list every name, write: syk -n".to_string());
+            }
+            if word.text == "-" && !word.forced {
+                piped = true;
+                continue;
             }
             if word.forced {
                 if first_forced {
@@ -531,22 +537,60 @@ impl Draft {
         };
         roots.extend(either);
         let expanded = expansion(&roots);
+        if piped && !roots.is_empty() {
+            return Err("- searches what is piped in, so it cannot go with a path.".to_string());
+        }
         if roots.is_empty() {
-            roots.push(PathBuf::from("."));
+            roots.push(PathBuf::from(if piped { LABEL } else { "." }));
         }
         group::check(&self.filters.groups)?;
+        let plan = plan(self.slots, bare)?;
+        if piped {
+            fits_a_pipe(&plan, &self.filters, &self.output, &self.walk)?;
+        }
         Ok(Query {
-            plan: plan(self.slots, bare)?,
+            plan,
             roots,
             filters: self.filters,
             matching: self.matching,
             walk: self.walk,
             output: self.output,
             expanded,
+            piped,
             no_config: self.no_config,
             defaults: None,
         })
     }
+}
+
+fn fits_a_pipe(plan: &Plan, filters: &Filters, output: &Output, walk: &Walk) -> Result<(), String> {
+    let reads = match plan {
+        Plan::Union { pattern, targets } => pattern.is_some() && targets.content,
+        Plan::Narrow { dir, name, content } => content.is_some() && dir.is_none() && name.is_none(),
+    };
+    if !reads {
+        return Err("- searches the text that is piped in, so it needs a pattern and no -n or -d. Example: cat log | syk error -. To search for a dash, write: syk -- -".to_string());
+    }
+    let filtered = !filters.extensions.is_empty()
+        || !filters.excludes.is_empty()
+        || !filters.sizes.is_empty()
+        || !filters.ages.is_empty()
+        || filters.kind.is_some();
+    if filtered {
+        return Err(
+            "- searches what is piped in, which has no name, size or age to filter on.".to_string(),
+        );
+    }
+    if output.open || output.exec.is_some() || output.browse || output.best || output.why {
+        return Err(
+            "- searches what is piped in, so there is no file to open, pick or run a command on."
+                .to_string(),
+        );
+    }
+    if walk.index {
+        return Err("-y builds an index of a folder, so it cannot go with -.".to_string());
+    }
+    Ok(())
 }
 
 fn expansion(roots: &[PathBuf]) -> Option<Expanded> {
@@ -662,7 +706,7 @@ fn plan(mut slots: [Slot; 3], bare: Option<Terms>) -> Result<Plan, String> {
 }
 
 fn binds(next: &str) -> bool {
-    let flag_like = next.len() > 1 && next.starts_with('-');
+    let flag_like = next.starts_with('-');
     !flag_like && !filter::is_token(next) && extension_token(next).is_none() && !path_like(next)
 }
 

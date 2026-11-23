@@ -9,6 +9,7 @@ mod index;
 mod load;
 mod output;
 mod pattern;
+mod piped;
 mod rank;
 mod search;
 mod setup;

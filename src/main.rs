@@ -21,6 +21,7 @@ mod pager;
 mod parse;
 mod pattern;
 mod pick;
+mod piped;
 mod plan;
 mod query;
 mod rank;
@@ -105,6 +106,7 @@ fn main() -> ExitCode {
             }
             Err(error) => fail(&error),
         },
+        Ok(Outcome::Run(query)) if query.piped => piped::run(&query),
         Ok(Outcome::Run(query)) => run::run(*query),
         Ok(Outcome::Help(topics, terms)) => {
             help::print(&topics, &terms);

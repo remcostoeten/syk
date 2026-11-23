@@ -22,7 +22,7 @@ const FLAG: &str = "\x1b[36m";
 const NONE: &str = "";
 const RULE: &str = "─";
 
-const SHAPES: [(&str, &str, &str); 8] = [
+const SHAPES: [(&str, &str, &str); 9] = [
     ("foo", "pattern", "the text to search for"),
     (
         "src/",
@@ -38,6 +38,7 @@ const SHAPES: [(&str, &str, &str); 8] = [
     ("-1mb", "size", "only files of 1 MB or less"),
     ("+7d", "age", "only files modified more than 7 days ago"),
     ("-2h", "age", "only files modified in the last 2 hours"),
+    ("-", "pipe", "search what is piped in, not files"),
     (
         "--",
         "separator",
@@ -65,7 +66,7 @@ const PATTERNS: [(&str, &str); 7] = [
     ),
 ];
 
-const EXAMPLES: [(&str, &str); 15] = [
+const EXAMPLES: [(&str, &str); 16] = [
     ("syk foo", "folders, files and lines matching foo"),
     (
         "syk foo src/ .ts",
@@ -82,6 +83,7 @@ const EXAMPLES: [(&str, &str); 15] = [
         "syk -d api -c auth",
         "lines matching auth below folders named *api*",
     ),
+    ("cat app.log | syk error -", "search what is piped in"),
     ("syk foo -E dist,build", "leave out two folders"),
     (
         "syk .log +30d +1mb",

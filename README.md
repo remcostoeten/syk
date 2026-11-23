@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg" />
+    <img src="docs/logo-light.svg" width="88" alt="syk logo" />
+  </picture>
+</p>
+
 <h1 align="center">syk</h1>
 
 **Syk** *(verb)*
@@ -58,7 +65,7 @@ yay -S syk-bin
 cargo install syk-search
 ```
 
-The crate is called `syk-search`, and the command it installs is `syk`.
+The crate is called `syk-search`, and the command it installs is `syk`. `cargo binstall syk-search` downloads the built program instead of compiling it.
 
 `syk --setup` then adds tab completion and the `s` jump command to your shell, and `syk --setup man` installs the manual page.
 

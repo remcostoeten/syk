@@ -23,6 +23,7 @@ ignore = "0.4.34"
 libc = "0.2.191"
 memchr = "2.8.3"
 memmap2 = "0.9.12"
+regex-syntax = "0.8.12"
 
 [profile.release]
 opt-level = 3

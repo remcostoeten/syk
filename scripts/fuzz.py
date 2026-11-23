@@ -14,7 +14,10 @@ ABOUT = "Change random trees and check that syk finds the same with an index as 
 METHOD = (
     "Every tree gets an index from syk -y. A round then makes a few random changes: files "
     "and folders are made, removed, renamed and swapped, ignore files are written and "
-    "removed, and folders lose and regain their permissions. After every round each query "
+    "removed, and folders lose and regain their permissions. Files also get other text, "
+    "sometimes of the same length and with the old modification time put back, and some "
+    "turn into binary files. A new index is first tried with changes to the text of "
+    "files only, which leave every folder as it was. After every round each query "
     "runs twice, once with the index and once with -Y, and the results, the errors and "
     "the exit status have to be the same. The exit status is 1 at the first difference. "
     "Trees are made in a temporary folder, which has to be on a file system that syk "
@@ -42,7 +45,16 @@ NAMES = [
     ".hidden",
     "zeta.rs",
 ]
-TEXTS = ["needle here\n", "nothing\n", "a needle\nand more\n"]
+TEXTS = [
+    "needle here\n",
+    "noodle here\n",
+    "nothing\n",
+    "a needle\nand more\n",
+    "A NEEDLE\nand less\n",
+    "a noodle\nand more\n",
+    "needle\0binary\n",
+    "filler line without the word\n" * 400 + "the last needle\n",
+]
 RULES = ["*.log\n", "build\n", "docs/\n", "!notes.txt\n*.txt\n", "/lib\n", "deep\n", "tmp/\n*.rs\n"]
 CHANGES = [
     "file",
@@ -61,7 +73,11 @@ CHANGES = [
     "tree",
     "symlink",
     "touch",
+    "touch",
+    "rewrite",
+    "rewrite",
 ]
+TEXT = ["touch", "rewrite"]
 QUERIES = [
     ["-n"],
     ["-d"],
@@ -82,6 +98,14 @@ QUERIES = [
     ["-d", "t", "-n", "a"],
     ["-n", "Cargo"],
     ["-n", "a", "b"],
+    ["-c", "noodle"],
+    ["-c", "needle", "-N"],
+    ["-i", "-c", "NEEDLE", "-l"],
+    ["-c", "n[eo]+dle"],
+    ["-c", "and more"],
+    ["-c", "last needle", "-u", "lock"],
+    ["needle", "here"],
+    ["-n", "lock", "-c", "needle"],
 ]
 SETTLE = 2.1
 # The walkers word a failed folder differently, with or without this prefix
@@ -120,8 +144,8 @@ def write(path):
     path.write_text(random.choice(TEXTS))
 
 
-def change(root):
-    kind = random.choice(CHANGES)
+def change(root, kinds=CHANGES):
+    kind = random.choice(kinds)
     where = random.choice(folders(root))
     target = where / random.choice(NAMES)
     below = [path for path in folders(root) if path != root]
@@ -163,6 +187,12 @@ def change(root):
             target.symlink_to(random.choice(folders(root)))
         elif kind == "touch" and files(root):
             write(random.choice(files(root)))
+        elif kind == "rewrite" and files(root):
+            chosen = random.choice(files(root))
+            before = chosen.stat()
+            same = [text for text in TEXTS if len(text) == before.st_size]
+            chosen.write_text(random.choice(same or TEXTS))
+            os.utime(chosen, ns=(before.st_atime_ns, before.st_mtime_ns))
     except (OSError, shutil.Error):
         pass
     return kind
@@ -211,6 +241,10 @@ def trial(syk, env, root, rounds, used):
         return False
     if not compare(syk, env, root, "a new tree", used):
         return False
+    for round in range(3):
+        kinds = [change(root, TEXT) for _ in range(random.randint(1, 4))]
+        if not compare(syk, env, root, f"text round {round} after {', '.join(kinds)}", used):
+            return False
     for round in range(rounds):
         kinds = [change(root) for _ in range(random.randint(1, 6))]
         if not compare(syk, env, root, f"round {round} after {', '.join(kinds)}", used):

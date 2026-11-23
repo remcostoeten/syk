@@ -3,6 +3,8 @@ use std::fs::{self, FileType, Metadata};
 use std::io;
 use std::path::Path;
 
+use crate::sign::Ruled;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Form {
     File,
@@ -44,6 +46,7 @@ pub struct Item<'a> {
     pub depth: usize,
     pub form: Form,
     pub follow: bool,
+    pub ruled: Option<Ruled>,
 }
 
 impl Item<'_> {

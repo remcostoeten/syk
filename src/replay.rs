@@ -12,6 +12,7 @@ use ignore::WalkState;
 
 use crate::group::{self, Skip};
 use crate::index::{self, Fresh, Index, Opened, Scan};
+use crate::need::Need;
 use crate::query::Query;
 use crate::report::counted;
 use crate::walk::{excludes, skips, threads, walker};
@@ -175,6 +176,10 @@ pub fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
     let gate = shared
         .gate()
         .map(|pattern| move |names: &[u8], at: usize| pattern.next_name(names, at));
+    let need = shared.need().filter(|need| *need != Need::Any);
+    let signs = need.as_ref().and_then(|_| index.signs());
+    let verdicts = signs.as_ref().zip(need.as_ref());
+    let verdicts = verdicts.map(|(signs, need)| signs.judge(need));
     let scan = Scan {
         index,
         root: query.roots[0].as_os_str().as_bytes(),
@@ -182,6 +187,7 @@ pub fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
         state: &state,
         excluded: excluded.as_ref(),
         gate: gate.as_ref().map(|gate| gate as &index::Gate<'_>),
+        verdicts: verdicts.as_ref(),
     };
     let total = index.entries();
     if sorted {
@@ -224,12 +230,13 @@ pub fn reindex(mut query: Query, started: Instant) -> ExitCode {
         query.roots[0] = real;
     }
     let root = &query.roots[0];
-    match index::build(root, &print(query), walker(query)) {
+    match index::build(root, &print(query), walker(query), threads(query)) {
         Ok(built) => {
             println!(
-                "Indexed {} in {} below {} in {:.2} s.",
+                "Indexed {} in {} and the contents of {} below {} in {:.2} s.",
                 counted(built.entries as u64, "entry", "entries"),
                 counted(built.folders as u64, "folder", "folders"),
+                counted(built.signed as u64, "file", "files"),
                 shown.display(),
                 started.elapsed().as_secs_f64()
             );

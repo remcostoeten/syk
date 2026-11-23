@@ -58,8 +58,16 @@ pub fn totals(tally: Tally, layout: Layout, elapsed: Duration, reread: Option<us
             }
         ),
     };
+    let spared = match tally.spared {
+        0 => String::new(),
+        1 => " The index showed that 1 file could not match, so it was not read.".to_string(),
+        files => format!(
+            " The index showed that {} files could not match, so they were not read.",
+            grouped(files)
+        ),
+    };
     format!(
-        "{} matched. Read {} of {} in {time}.{source}",
+        "{} matched. Read {} of {} in {time}.{source}{spared}",
         matched.join(", "),
         counted(tally.read, "file", "files"),
         counted(tally.entries, "entry", "entries")

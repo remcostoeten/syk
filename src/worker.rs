@@ -17,6 +17,7 @@ use crate::group::{Skips, ends_with};
 use crate::index::Visit;
 use crate::item::{Form, Item};
 use crate::load::{self, Loaded};
+use crate::need::Need;
 use crate::output::{Budget, Entry, Layout, Lines, Style, write_count, write_entry};
 use crate::pattern::Pattern;
 use crate::plan::Compiled;
@@ -63,6 +64,7 @@ pub struct Tally {
     pub lines: u64,
     pub files: u64,
     pub names: u64,
+    pub spared: u64,
     pub withheld: Withheld,
 }
 
@@ -79,6 +81,7 @@ impl Tally {
         self.lines += other.lines;
         self.files += other.files;
         self.names += other.names;
+        self.spared += other.spared;
         self.withheld.files += other.withheld.files;
         self.withheld.lines += other.withheld.lines;
     }
@@ -106,6 +109,11 @@ impl Shared {
             _ => return None,
         };
         (!self.gather && pattern.siftable()).then_some(pattern)
+    }
+
+    pub fn need(&self) -> Option<Need> {
+        let content = self.plan.content().filter(|_| !self.gather)?;
+        Some(content.need())
     }
 
     pub fn fail(&self, message: impl std::fmt::Display) {
@@ -196,6 +204,7 @@ impl<'a> Worker<'a> {
             depth: entry.depth(),
             form: Form::of(kind),
             follow: self.shared.follow,
+            ruled: None,
         })
     }
 
@@ -219,7 +228,12 @@ impl<'a> Worker<'a> {
             return WalkState::Continue;
         };
         if !self.reads(job) {
-            self.handle(entry, job, None);
+            let spared = job.muted && !self.shared.gather && self.spared(entry, true);
+            self.handle(entry, job, spared.then_some(Ok(Loaded::Unmatched)));
+            return WalkState::Continue;
+        }
+        if self.spared(entry, false) {
+            self.handle(entry, job, Some(Ok(Loaded::Unmatched)));
             return WalkState::Continue;
         }
         let patient = self.ahead == 0;
@@ -254,6 +268,14 @@ impl<'a> Worker<'a> {
         }
     }
 
+    fn spared(&mut self, entry: &Item<'_>, muted: bool) -> bool {
+        let spared = entry
+            .ruled
+            .is_some_and(|ruled| !(muted && ruled.binary) && ruled.holds(entry.path()));
+        self.tally.spared += u64::from(spared);
+        spared
+    }
+
     fn load(&mut self, path: &Path, patient: bool) -> io::Result<Loaded> {
         load::fill(File::open(path)?, &mut self.loaded, patient)
     }
@@ -277,6 +299,7 @@ impl<'a> Worker<'a> {
             depth: waiting.depth,
             form: waiting.form,
             follow: self.shared.follow,
+            ruled: None,
         };
         self.handle(&entry, waiting.job, Some(loaded));
     }
@@ -470,7 +493,8 @@ impl<'a> Worker<'a> {
             if named {
                 self.path_line(&item, true);
             }
-            if job.muted && !shared.gather {
+            let spared = matches!(loaded, Some(Ok(Loaded::Unmatched)));
+            if job.muted && !shared.gather && !spared {
                 self.weigh(entry);
             }
             return;
@@ -536,12 +560,13 @@ impl<'a> Worker<'a> {
             first: None,
             binary: false,
         };
+        let spared = matches!(loaded, Ok(Loaded::Unmatched));
         let result = match loaded {
             Ok(Loaded::Text(length)) => {
                 self.searcher
                     .search_slice(matcher, &self.loaded[..length], &mut sink)
             }
-            Ok(Loaded::Binary) => Ok(()),
+            Ok(Loaded::Binary | Loaded::Unmatched) => Ok(()),
             Ok(Loaded::Large(rest)) => {
                 let whole = self.loaded.as_slice().chain(rest);
                 self.searcher.search_reader(matcher, whole, &mut sink)
@@ -556,7 +581,7 @@ impl<'a> Worker<'a> {
         if let Err(error) = result {
             shared.fail(format_args!("{}: {error}", entry.path().display()));
         }
-        self.tally.read += 1;
+        self.tally.read += u64::from(!spared);
         if hits > 0 {
             shared.found.store(true, Ordering::Relaxed);
             self.line = first;

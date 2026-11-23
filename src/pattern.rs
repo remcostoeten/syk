@@ -3,6 +3,7 @@ use std::sync::OnceLock;
 use grep_matcher::{LineTerminator, Match, Matcher, NoCaptures, NoError};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
 
+use crate::need::{self, Need};
 use crate::query::{Case, Matching};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -180,6 +181,14 @@ impl Pattern {
             at = end + 1;
         }
         None
+    }
+
+    pub fn need(&self) -> Need {
+        let needs = self
+            .terms
+            .iter()
+            .map(|term| need::of(&term.source, term.reading != Reading::Regex));
+        need::all(needs.collect())
     }
 
     pub fn lines(&self) -> &RegexMatcher {

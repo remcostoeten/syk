@@ -1,12 +1,13 @@
 use std::fs::File;
 use std::io::{self, Read};
 
-const WHOLE: usize = 64 * 1024;
-const MARKS: [[u8; 2]; 2] = [[0xFF, 0xFE], [0xFE, 0xFF]];
+pub const WHOLE: usize = 64 * 1024;
+pub const MARKS: [[u8; 2]; 2] = [[0xFF, 0xFE], [0xFE, 0xFF]];
 
 pub enum Loaded {
     Text(usize),
     Binary,
+    Unmatched,
     Large(File),
 }
 

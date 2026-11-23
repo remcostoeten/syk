@@ -568,7 +568,7 @@ section_output() {
         "syk .log -0 | xargs -0 wc -c"
     run "-j sets the number of worker threads." \
         "syk -c auth -l -j 2"
-    run "-y builds an index: a list of every name, kept in ~/.cache/syk. It works on Linux." \
+    run "-y builds an index: a list of every name and a signature of every text, kept in ~/.cache/syk. It works on Linux." \
         "syk -y" \
         "syk does this by itself after a search in a very large folder."
     run "A search then takes its names from the index, once nothing changed in the last two seconds. -T says so." \

@@ -87,3 +87,68 @@ fn an_index_finds_what_a_walk_finds_while_the_tree_changes() {
             .contains("-y does not go with")
     );
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn files_that_cannot_match_are_not_read_until_they_change() {
+    let fixture = Fixture::new();
+    fixture.file("docs/a.md", "plain words\n");
+    fixture.file("docs/b.md", "other words\n");
+    fixture.file("docs/Cargo.lock", "locked thing\n");
+    let search = |extra: &[&str]| -> (Vec<String>, String) {
+        let output = fixture
+            .command(&[&["-c", "needle", "-T", "-p"], extra].concat())
+            .output()
+            .expect("run syk");
+        let mut lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        lines.sort();
+        (lines, String::from_utf8_lossy(&output.stderr).into_owned())
+    };
+    std::thread::sleep(Duration::from_millis(2100));
+    let (built, status) = fixture.run(&["-y"]);
+    assert_eq!(status, 0);
+    assert!(built.contains("and the contents of 10 files"), "{built}");
+
+    let (found, stats) = search(&[]);
+    assert_eq!(found, search(&["-Y"]).0);
+    assert!(
+        stats.contains("The index showed that 8 files could not match"),
+        "{stats}"
+    );
+    assert!(!stats.contains("of the group lock"), "{stats}");
+    assert!(!search(&["-Y"]).1.contains("could not match"));
+
+    let path = fixture.root.join("docs/a.md");
+    let before = fs::metadata(&path)
+        .and_then(|metadata| metadata.modified())
+        .expect("a modification time");
+    fs::write(&path, "needle word\n").expect("write the same length");
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .and_then(|file| file.set_modified(before))
+        .expect("put the time back");
+    fixture.file("big.bin", "needle as text\n");
+    fixture.file("docs/Cargo.lock", "needle locked\n");
+    let (found, stats) = search(&[]);
+    for line in ["docs/a.md:1:needle word", "big.bin:1:needle as text"] {
+        assert!(found.contains(&line.to_string()), "{line} in {found:?}");
+    }
+    assert_eq!(found, search(&["-Y"]).0);
+    assert!(
+        stats.contains("The index showed that 5 files could not match"),
+        "{stats}"
+    );
+    assert!(
+        stats.contains("1 more line matches in 1 file of the group lock"),
+        "{stats}"
+    );
+
+    let (found, stats) = search(&["-u", "lock"]);
+    assert!(found.contains(&"docs/Cargo.lock:1:needle locked".to_string()));
+    assert_eq!(found, search(&["-u", "lock", "-Y"]).0);
+    assert!(stats.contains("5 files could not match"), "{stats}");
+}

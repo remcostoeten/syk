@@ -14,13 +14,14 @@ use ignore::overrides::Override;
 use memmap2::Mmap;
 
 use crate::item::{Form, Item};
+use crate::sign::{self, Ruled, Signs, Verdicts};
 
-const MAGIC: &[u8; 8] = b"sykidx02";
+const MAGIC: &[u8; 8] = b"sykidx03";
 const HEAD: usize = 48;
 const RECORD: usize = 20;
 const FOLDER: usize = 40;
 const STAMP: usize = 32;
-const SLACK: i64 = 2_000_000_000;
+pub const SLACK: i64 = 2_000_000_000;
 const RACY: u32 = 1;
 const GITIGNORE: u32 = 2;
 const IGNORE: u32 = 4;
@@ -84,7 +85,7 @@ impl Stamp {
     }
 }
 
-fn word(bytes: &[u8], at: usize) -> u32 {
+pub fn word(bytes: &[u8], at: usize) -> u32 {
     bytes
         .get(at..at + 4)
         .and_then(|part| part.try_into().ok())
@@ -98,14 +99,14 @@ fn short(bytes: &[u8], at: usize) -> u16 {
         .map_or(0, u16::from_le_bytes)
 }
 
-fn long(bytes: &[u8], at: usize) -> u64 {
+pub fn long(bytes: &[u8], at: usize) -> u64 {
     bytes
         .get(at..at + 8)
         .and_then(|part| part.try_into().ok())
         .map_or(0, u64::from_le_bytes)
 }
 
-fn now() -> i64 {
+pub fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |since| since.as_nanos() as i64)
@@ -381,6 +382,7 @@ impl Trail {
 
 pub struct Index {
     map: Mmap,
+    path: PathBuf,
     built: i64,
     entries: u32,
     folders: u32,
@@ -415,6 +417,7 @@ pub struct Scan<'a> {
     pub state: &'a [u8],
     pub excluded: Option<&'a Override>,
     pub gate: Option<&'a Gate<'a>>,
+    pub verdicts: Option<&'a Verdicts<'a>>,
 }
 
 pub struct Fresh {
@@ -459,6 +462,7 @@ impl Index {
         }
         (entries > 0 && folders > 0).then_some(Index {
             map,
+            path: path.to_path_buf(),
             built,
             entries,
             folders,
@@ -495,6 +499,33 @@ impl Index {
 
     pub fn folders(&self) -> u32 {
         self.folders
+    }
+
+    pub fn built(&self) -> i64 {
+        self.built
+    }
+
+    pub fn signs(&self) -> Option<Signs> {
+        Signs::open(&self.path.with_extension("sig"), self.built, self.entries)
+    }
+
+    pub fn files(&self, root: &[u8], entries: Range<u32>, visit: &mut dyn FnMut(u32, &Path)) {
+        let entries = entries.start..entries.end.min(self.entries);
+        if entries.is_empty() {
+            return;
+        }
+        let mut trail = Trail::new();
+        for above in self.chain(entries.start) {
+            let record = self.record(above);
+            trail.step(root, record.depth as usize, self.name(&record));
+        }
+        for at in entries {
+            let record = self.record(at);
+            trail.step(root, record.depth as usize, self.name(&record));
+            if record.form() == Form::File {
+                visit(at, trail.as_path());
+            }
+        }
     }
 
     fn record(&self, at: u32) -> Record {
@@ -704,7 +735,14 @@ impl Scan<'_> {
                     .is_some_and(|excluded| excluded.matched(path, folder).is_ignore()))
     }
 
-    fn entry<'a>(&'a self, record: &Record, trail: &'a Trail) -> Item<'a> {
+    fn ruling(&self, at: u32, record: &Record, hint: &mut usize) -> Option<Ruled> {
+        match (self.verdicts, record.form()) {
+            (Some(verdicts), Form::File) => verdicts.ruling(at, hint),
+            _ => None,
+        }
+    }
+
+    fn entry<'a>(&'a self, record: &Record, trail: &'a Trail, ruled: Option<Ruled>) -> Item<'a> {
         Item {
             path: trail.as_path(),
             name: match record.depth {
@@ -717,6 +755,7 @@ impl Scan<'_> {
             depth: record.depth as usize,
             form: record.form(),
             follow: false,
+            ruled,
         }
     }
 
@@ -780,6 +819,7 @@ impl Scan<'_> {
         };
         let mut trail = Trail::new();
         let (mut at, mut hits) = (0, 0);
+        let mut hint = 0;
         let mut done = entries.start;
         while let Some((line, _)) = gate(blob, at) {
             let entry = self.locate(&entries, start + line);
@@ -787,10 +827,11 @@ impl Scan<'_> {
             let after = record.name as usize + record.len as usize + 1;
             at = after.saturating_sub(start).max(at + 1);
             hits += 1;
-            if let Some(record) = self.reach(entry, &mut trail)
-                && !visit(Visit::Entry(self.entry(&record, &trail)))
-            {
-                return false;
+            if let Some(record) = self.reach(entry, &mut trail) {
+                let ruled = self.ruling(entry, &record, &mut hint);
+                if !visit(Visit::Entry(self.entry(&record, &trail, ruled))) {
+                    return false;
+                }
             }
             done = entry + 1;
             if hits >= STRIDE && hits * DENSE > done - entries.start {
@@ -835,6 +876,7 @@ impl Scan<'_> {
             }
         }
         let mut failure = index.failures(at);
+        let mut hint = 0;
         while at < entries.end {
             let record = index.record(at);
             trail.step(self.root, record.depth as usize, index.name(&record));
@@ -845,7 +887,8 @@ impl Scan<'_> {
                 };
                 continue;
             }
-            if !visit(Visit::Entry(self.entry(&record, &trail))) {
+            let ruled = self.ruling(at, &record, &mut hint);
+            if !visit(Visit::Entry(self.entry(&record, &trail, ruled))) {
                 return false;
             }
             let messages = self.failed(at, &record, &mut failure);
@@ -875,6 +918,7 @@ impl Scan<'_> {
 pub struct Built {
     pub entries: usize,
     pub folders: usize,
+    pub signed: usize,
 }
 
 struct Draft {
@@ -1065,7 +1109,8 @@ fn prune(store: &Path) {
     let kind = |path: &Path, wanted: &str| path.extension().is_some_and(|kind| kind == wanted);
     for path in &paths {
         let lapsed = (kind(path, "no") && !younger(path, REFUSED))
-            || ((kind(path, "lock") || kind(path, "part")) && !younger(path, LOCKED));
+            || ((kind(path, "lock") || kind(path, "part")) && !younger(path, LOCKED))
+            || (kind(path, "sig") && !path.with_extension("idx").exists());
         if lapsed {
             let _ = fs::remove_file(path);
         }
@@ -1078,11 +1123,17 @@ fn prune(store: &Path) {
     kept.sort();
     let extra = kept.len().saturating_sub(KEPT);
     for (_, path) in kept.into_iter().take(extra) {
+        let _ = fs::remove_file(path.with_extension("sig"));
         let _ = fs::remove_file(path);
     }
 }
 
-pub fn build(root: &Path, print: &str, builder: WalkBuilder) -> Result<Built, String> {
+pub fn build(
+    root: &Path,
+    print: &str,
+    builder: WalkBuilder,
+    threads: usize,
+) -> Result<Built, String> {
     let real = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
     let store = store().ok_or("there is no cache folder, because HOME is not set")?;
     fs::DirBuilder::new()
@@ -1109,23 +1160,36 @@ pub fn build(root: &Path, print: &str, builder: WalkBuilder) -> Result<Built, St
         .open(&lock)
         .map_err(|error| format!("{}: {error}", lock.display()))?;
     let started = now();
+    let placed = store.join(format!("{name}.idx"));
+    let partial = store.join(format!("{name}.{}.part", std::process::id()));
     let made = gather(root, started, builder).and_then(|draft| {
         let bytes = encode(&draft, &real, print, started);
-        let partial = store.join(format!("{name}.{}.part", std::process::id()));
         let written = File::options()
             .write(true)
             .create_new(true)
             .mode(0o600)
             .open(&partial)
             .and_then(|mut file| file.write_all(&bytes))
-            .and_then(|()| fs::rename(&partial, store.join(format!("{name}.idx"))));
+            .and_then(|()| fs::rename(&partial, &placed));
         if let Err(error) = written {
             let _ = fs::remove_file(&partial);
             return Err(format!("{}: {error}", store.display()));
         }
+        let _ = fs::remove_file(placed.with_extension("sig"));
+        let signed = Index::load(&placed).and_then(|index| {
+            let signed = sign::build(&index, root.as_os_str().as_bytes(), threads, &partial)
+                .and_then(|signed| {
+                    fs::rename(&partial, placed.with_extension("sig")).map(|()| signed)
+                });
+            if signed.is_err() {
+                let _ = fs::remove_file(&partial);
+            }
+            signed.ok()
+        });
         Ok(Built {
             entries: draft.records.len(),
             folders: draft.folders.len(),
+            signed: signed.unwrap_or(0),
         })
     });
     let _ = fs::remove_file(&lock);
@@ -1153,14 +1217,21 @@ pub fn spawn(root: &Path, flags: &[String]) -> io::Result<()> {
     use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
-    Command::new(std::env::current_exe()?)
+    let mut command = Command::new(std::env::current_exe()?);
+    command
         .args(flags)
         .arg("--index")
         .arg(root)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .map(drop)
+        .process_group(0);
+    // The child lowers its own priority before it becomes syk, and touches nothing else
+    unsafe {
+        command.pre_exec(|| {
+            libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+            Ok(())
+        });
+    }
+    command.spawn().map(drop)
 }

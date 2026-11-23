@@ -58,6 +58,7 @@ struct Draft {
     init: Option<String>,
     setup: Option<Option<String>>,
     indexes: Option<Action>,
+    beside: Option<String>,
     no_config: bool,
     inherited: bool,
 }
@@ -112,6 +113,7 @@ fn read(raw: Vec<OsString>, inherited: usize) -> Result<Outcome, String> {
         init: None,
         setup: None,
         indexes: None,
+        beside: None,
         no_config: false,
         inherited: false,
     };
@@ -167,6 +169,11 @@ fn read(raw: Vec<OsString>, inherited: usize) -> Result<Outcome, String> {
         return Ok(Outcome::Setup(shell));
     }
     if let Some(action) = draft.indexes.take() {
+        if let Some(other) = draft.beside.take() {
+            return Err(format!(
+                "-A, --indexes takes an action and folders, so {other} cannot go with it."
+            ));
+        }
         let paths = draft.words.iter().map(|word| PathBuf::from(&word.raw));
         return Ok(Outcome::Indexes(action, paths.collect()));
     }
@@ -344,6 +351,9 @@ impl Draft {
     }
 
     fn filter(&mut self, parsed: Parsed) {
+        if !self.inherited {
+            self.beside.get_or_insert_with(|| "a filter".to_string());
+        }
         match parsed {
             Parsed::Size(size) => self.filters.sizes.push(size),
             Parsed::Age(age) => self.filters.ages.push(age),
@@ -352,6 +362,13 @@ impl Draft {
 
     fn set(&mut self, flag: &Flag, value: Option<String>) -> Result<(), String> {
         let text = value.as_deref().unwrap_or("");
+        let neutral = matches!(
+            flag.id,
+            Id::Indexes | Id::NoPager | Id::NoBanner | Id::NoConfig
+        );
+        if !self.inherited && !neutral {
+            self.beside.get_or_insert_with(|| flag.label());
+        }
         if self.inherited
             && matches!(
                 flag.id,
@@ -733,8 +750,16 @@ fn unknown_long(name: &str) -> String {
 }
 
 fn unknown_short(short: char, arg: &str) -> String {
-    let hint = match flags::closest(&arg[1..]) {
-        Some(flag) => format!(" Did you mean --{}?", flag.long),
+    let swapped = match short.is_ascii_lowercase() {
+        true => short.to_ascii_uppercase(),
+        false => short.to_ascii_lowercase(),
+    };
+    let like = match arg.chars().count() {
+        2 => flags::by_short(swapped),
+        _ => flags::closest(&arg[1..]),
+    };
+    let hint = match like {
+        Some(flag) => format!(" Did you mean -{}, --{}?", flag.short, flag.long),
         None => String::new(),
     };
     if arg.chars().count() == 2 {

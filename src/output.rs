@@ -130,8 +130,8 @@ fn label(out: &mut Vec<u8>, entry: &Entry<'_>, style: Style<'_>) {
 
 pub fn write_entry(out: &mut Vec<u8>, entry: &Entry<'_>, style: Style<'_>) {
     if style.json {
-        out.extend_from_slice(b"{\"type\":\"path\",\"path\":");
-        quote(out, entry.path);
+        out.extend_from_slice(b"{\"type\":\"path\",");
+        located(out, entry.path);
         let kind = if entry.folder { "dir" } else { "file" };
         let _ = writeln!(out, ",\"kind\":\"{kind}\"}}");
         return;
@@ -142,8 +142,8 @@ pub fn write_entry(out: &mut Vec<u8>, entry: &Entry<'_>, style: Style<'_>) {
 
 pub fn write_count(out: &mut Vec<u8>, entry: &Entry<'_>, count: u64, style: Style<'_>) {
     if style.json {
-        out.extend_from_slice(b"{\"type\":\"count\",\"path\":");
-        quote(out, entry.path);
+        out.extend_from_slice(b"{\"type\":\"count\",");
+        located(out, entry.path);
         let _ = writeln!(out, ",\"count\":{count}}}");
         return;
     }
@@ -155,6 +155,18 @@ pub fn write_count(out: &mut Vec<u8>, entry: &Entry<'_>, count: u64, style: Styl
         let _ = write!(out, "{count}");
     }
     out.push(style.end);
+}
+
+fn located(out: &mut Vec<u8>, path: &[u8]) {
+    out.extend_from_slice(b"\"path\":");
+    quote(out, path);
+    if std::str::from_utf8(path).is_err() {
+        out.extend_from_slice(b",\"path_hex\":\"");
+        for byte in path {
+            let _ = write!(out, "{byte:02x}");
+        }
+        out.push(b'"');
+    }
 }
 
 fn quote(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -204,8 +216,8 @@ impl<M: Matcher> Lines<'_, M> {
     fn record(&mut self, number: Option<u64>, bytes: &[u8], matched: bool) {
         let line = trim(bytes);
         let kind = if matched { "match" } else { "context" };
-        let _ = write!(self.out, "{{\"type\":\"{kind}\",\"path\":");
-        quote(self.out, self.entry.path);
+        let _ = write!(self.out, "{{\"type\":\"{kind}\",");
+        located(self.out, self.entry.path);
         let _ = write!(self.out, ",\"line\":{},\"text\":", number.unwrap_or(0));
         quote(self.out, line);
         if matched {

@@ -132,9 +132,24 @@ impl Shared {
     pub fn fail(&self, message: impl std::fmt::Display) {
         self.failed.store(true, Ordering::Relaxed);
         if !self.quiet {
-            eprintln!("syk: {message}");
+            eprintln!("syk: {}", worded(&message.to_string()));
         }
     }
+}
+
+fn worded(message: &str) -> String {
+    // The walker of the ignore crate names the path twice
+    const TWICE: &str = "IO error for operation on ";
+    let named = message.find(TWICE).and_then(|at| {
+        let rest = &message[at + TWICE.len()..];
+        if at == 0 {
+            return Some(rest.to_string());
+        }
+        let path = message[..at].strip_suffix(": ")?;
+        let after = rest.strip_prefix(path)?.strip_prefix(": ")?;
+        Some(format!("{}{after}", &message[..at]))
+    });
+    named.unwrap_or_else(|| message.to_string())
 }
 
 pub type Found = Result<DirEntry, ignore::Error>;
@@ -749,4 +764,18 @@ impl Drop for Worker<'_> {
 fn display(path: &Path) -> &[u8] {
     let bytes = path.as_os_str().as_bytes();
     bytes.strip_prefix(b"./").unwrap_or(bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_error_names_its_path_once() {
+        let twice = "a/b: IO error for operation on a/b: Permission denied (os error 13)";
+        assert_eq!(worded(twice), "a/b: Permission denied (os error 13)");
+        let bare = "IO error for operation on a/b: Permission denied (os error 13)";
+        assert_eq!(worded(bare), "a/b: Permission denied (os error 13)");
+        assert_eq!(worded("a/b: No such file"), "a/b: No such file");
+    }
 }

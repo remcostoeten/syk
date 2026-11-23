@@ -84,3 +84,32 @@ fn results_come_as_json_or_separated_by_nul_bytes() {
         "src/api/route.ts\0"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn json_keeps_the_exact_bytes_of_a_path() {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    let fixture = Fixture::new();
+    let name = OsStr::from_bytes(b"w\xffz.txt");
+    std::fs::write(fixture.root.join(name), "x\n").expect("write file");
+    let (out, status) = fixture.run(&["-n", "z.txt", "-J"]);
+    assert_eq!(status, 0);
+    assert!(out.contains(r#""path_hex":"77ff7a2e747874""#), "{out}");
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unreadable_folder_sets_the_exit_status() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    fixture.file("locked/inner.txt", "needle\n");
+    let locked = fixture.root.join("locked");
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).expect("lock");
+    let readable = std::fs::read_dir(&locked).is_ok();
+    let status = fixture.run(&["-c", "needle", "-l"]).1;
+    std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).expect("unlock");
+    assert_eq!(status, if readable { 0 } else { 2 });
+}

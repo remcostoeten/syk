@@ -72,3 +72,19 @@ fn help_that_fits_or_is_switched_off_is_printed_in_one_piece() {
     assert!(terminal.seen.contains("  syk "));
     assert!(!terminal.seen.contains("|__/"));
 }
+
+#[test]
+fn an_unknown_letter_gets_no_far_fetched_suggestion() {
+    let fixture = Fixture::new();
+    assert!(
+        fixture
+            .errors(&["-v"])
+            .contains("Did you mean -V, --version?")
+    );
+    assert!(!fixture.errors(&["-q"]).contains("Did you mean"));
+    assert!(
+        fixture
+            .errors(&["--versoin"])
+            .contains("Did you mean --version?")
+    );
+}

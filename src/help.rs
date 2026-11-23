@@ -101,7 +101,7 @@ const EXAMPLES: [(&str, &str); 15] = [
 const EXIT: [(&str, &str); 3] = [
     ("0", "something was found"),
     ("1", "nothing was found"),
-    ("2", "an argument or a path was wrong"),
+    ("2", "an argument was wrong or something was unreadable"),
 ];
 
 const MORE: [(&str, &str); 6] = [

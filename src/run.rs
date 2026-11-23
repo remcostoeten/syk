@@ -169,14 +169,10 @@ fn deliver(
 }
 
 fn status(found: bool, ran: bool, failed: bool) -> ExitCode {
-    if found && ran {
-        ExitCode::SUCCESS
-    } else if found {
-        ExitCode::from(1)
-    } else if failed {
-        ExitCode::from(2)
-    } else {
-        ExitCode::from(1)
+    match (failed, found && ran) {
+        (true, _) => ExitCode::from(2),
+        (false, true) => ExitCode::SUCCESS,
+        (false, false) => ExitCode::from(1),
     }
 }
 

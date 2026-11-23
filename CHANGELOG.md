@@ -1,20 +1,36 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
+
+This release is about using syk in more places. It can search what is piped in, the index now works on macOS, and two new filters narrow a search to the files you are working on or to one language. Building an index again now lists only the folders that changed.
+
+Installing is also more reliable. The Linux builds need glibc 2.34, but the install script accepted 2.31, so on Debian 11 and similar systems it installed a program that could not start. Those systems now get a static build. From this version on, a tagged release publishes itself to crates.io and the AUR.
+
+### Searching
 
 - `syk pattern -` searches what is piped in and prints each match as it arrives. `syk -- -` still searches for a dash.
+- `-Q`, `--uncommitted` searches only the files that git reports as changed or new.
+- `-e` takes language names such as `rust`, `typescript` and `web`, which stand for all their extensions. A plain extension stays exact.
+- A name search for a plain word no longer goes through the regular expression engine, and every thread keeps its own patterns, which makes searches of names without an index faster.
+
+### Index
+
 - The index works on macOS, on APFS and HFS+.
 - Building an index again copies the folders that did not change from the old index and lists only the ones that did.
-- `syk --init man` prints a manual page, and `syk --init zsh:` prints the completions without the jump command, for packages.
-- The AUR package installs the manual page and the completions.
-- `syk --setup man` installs the manual page next to the program, for installs through cargo or the install script.
-- `-Q`, `--uncommitted` searches only the files that git reports as changed or new.
-- `-e` takes language names such as `rust`, `typescript` and `web`, which stand for all their extensions.
-- A name search for a plain word no longer goes through the regular expression engine, and every thread keeps its own patterns, which makes searches of names without an index faster.
-- `docs/benchmarks.html` is measured again on this version, and also compares ugrep, git grep, bfs and plocate.
-- A tagged release publishes itself to crates.io and the AUR once the binaries are built.
-- Releases include static Linux builds, which the install script uses on systems with an older glibc.
+
+### Installing
+
+- Releases include static Linux builds, which the install script uses on systems with a glibc older than 2.34.
 - `cargo binstall syk-search` downloads the built program, and every release archive has a GitHub attestation.
+- `syk --setup man` installs the manual page next to the program, for installs through cargo or the install script.
+- `syk --init man` prints the manual page, and `syk --init zsh:` prints the completions without the jump command, for packages.
+- The AUR package installs the manual page and the completions.
+
+### Benchmarks
+
+The [benchmark page](https://remcostoeten.github.io/syk/benchmarks.html) compares syk with ripgrep, ugrep, git grep, fd, bfs, find, plocate and grep, on searches where every tool prints the same results. A regular expression in a tree of about 81,000 files took a median of 121 ms with syk, 45 ms with its index and 143 ms with ripgrep, on a 16-thread machine that was also doing other work.
+
+plocate is faster on names: 2 ms against 57 ms for syk without an index on a rare name in `/usr`. plocate does not see changes made after its last index build, while syk checks for them on every search.
 
 ## 0.1.2
 

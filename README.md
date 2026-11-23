@@ -82,6 +82,8 @@ scripts/fuzz.py                                # change random trees and compare
 git config core.hooksPath .githooks            # format on commit, lint on push
 ```
 
+The results of the last benchmark run are on the [benchmark page](https://remcostoeten.github.io/syk/benchmarks.html).
+
 <br/>
 
 xxx,<br/>

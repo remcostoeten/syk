@@ -630,6 +630,50 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::from(2)
 }
 
+fn install(shell: Shell, function: &str, sources: &[Source], home: &Path) -> ExitCode {
+    let name = shell.name();
+    let entry = shell.entry(home);
+    let real = fs::canonicalize(&entry).unwrap_or_else(|_| entry.clone());
+    println!("{name} starts at {}.", short(&entry, home));
+    if real != entry {
+        println!("That is a link to {}.", short(&real, home));
+    }
+    for plan in plans(shell, function, sources, home) {
+        println!("\n{}", describe(&plan, home));
+        if !agreed("Write this?") {
+            println!("Nothing was written.");
+            return ExitCode::from(1);
+        }
+        if let Err(error) = apply(&plan) {
+            undo(&plan);
+            return fail(&format!("could not write the change: {error}"));
+        }
+        match loads(shell, function) {
+            Some(true) => {
+                println!(
+                    "Done. A new {name} has {function} and completions for syk. Open a new shell and try: {function} <part of a folder name>"
+                );
+                return ExitCode::SUCCESS;
+            }
+            None => {
+                println!(
+                    "Written. {name} could not be started to check it, so open a new shell and try: {function} <part of a folder name>"
+                );
+                return ExitCode::SUCCESS;
+            }
+            Some(false) => {
+                undo(&plan);
+                println!("A new {name} did not load it, so the change was undone.");
+            }
+        }
+    }
+    println!(
+        "\nNo place was found that your {name} reads at startup. Add this line by hand where it is read:\n\n  {}\n\nsyk --setup agent prints instructions that a coding agent can follow to do it.",
+        shell.guarded(function)
+    );
+    ExitCode::from(1)
+}
+
 pub fn run(value: Option<&str>) -> ExitCode {
     let Some(home) = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -679,47 +723,7 @@ pub fn run(value: Option<&str>) -> ExitCode {
             "your {name} already has a command called {function}, and it is not from syk. Pick another name, for example: syk --setup {name}:j"
         ));
     }
-
-    let entry = shell.entry(&home);
-    let real = fs::canonicalize(&entry).unwrap_or_else(|_| entry.clone());
-    println!("{name} starts at {}.", short(&entry, &home));
-    if real != entry {
-        println!("That is a link to {}.", short(&real, &home));
-    }
-    for plan in plans(shell, function, &sources, &home) {
-        println!("\n{}", describe(&plan, &home));
-        if !agreed("Write this?") {
-            println!("Nothing was written.");
-            return ExitCode::from(1);
-        }
-        if let Err(error) = apply(&plan) {
-            undo(&plan);
-            return fail(&format!("could not write the change: {error}"));
-        }
-        match loads(shell, function) {
-            Some(true) => {
-                println!(
-                    "Done. A new {name} has {function} and completions for syk. Open a new shell and try: {function} <part of a folder name>"
-                );
-                return ExitCode::SUCCESS;
-            }
-            None => {
-                println!(
-                    "Written. {name} could not be started to check it, so open a new shell and try: {function} <part of a folder name>"
-                );
-                return ExitCode::SUCCESS;
-            }
-            Some(false) => {
-                undo(&plan);
-                println!("A new {name} did not load it, so the change was undone.");
-            }
-        }
-    }
-    println!(
-        "\nNo place was found that your {name} reads at startup. Add this line by hand where it is read:\n\n  {}\n\nsyk --setup agent prints instructions that a coding agent can follow to do it.",
-        shell.guarded(function)
-    );
-    ExitCode::from(1)
+    install(shell, function, &sources, &home)
 }
 
 #[cfg(test)]

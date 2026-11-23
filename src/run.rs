@@ -17,6 +17,24 @@ use crate::stop;
 use crate::walk::excludes;
 
 const BIG: u64 = 20_000;
+#[cfg(target_os = "linux")]
+const ROOMY: libc::c_int = 1 << 20;
+
+#[cfg(target_os = "linux")]
+fn widen() {
+    use std::os::fd::AsRawFd;
+
+    let output = io::stdout().as_raw_fd();
+    // Both calls fail on anything but a pipe, and a pipe that is larger already is left alone
+    unsafe {
+        if (0..ROOMY).contains(&libc::fcntl(output, libc::F_GETPIPE_SZ)) {
+            libc::fcntl(output, libc::F_SETPIPE_SZ, ROOMY);
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn widen() {}
 
 pub fn retryable(query: &Query) -> Option<(&str, Targets)> {
     match &query.plan {
@@ -180,6 +198,9 @@ pub fn run(query: Query) -> ExitCode {
         return ExitCode::from(2);
     }
     let view = view(&query);
+    if !view.live {
+        widen();
+    }
     let rank = ranked(&query, view.live);
     let keep = rank || query.output.acts() || query.output.browse;
     let habits = rank.then(|| std::thread::spawn(Habits::load));

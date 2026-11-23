@@ -144,6 +144,21 @@ fn system(_: &Path) -> Option<i64> {
     None
 }
 
+#[cfg(target_os = "macos")]
+pub fn trusted(path: &Path) -> bool {
+    let Ok(text) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
+        return false;
+    };
+    let mut found: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(text.as_ptr(), &mut found) } != 0 {
+        return false;
+    }
+    let name = unsafe { std::ffi::CStr::from_ptr(found.f_fstypename.as_ptr()) };
+    // APFS and HFS+ update a folder's times on every change, network mounts need not
+    matches!(name.to_bytes(), b"apfs" | b"hfs")
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn trusted(path: &Path) -> bool {
     // ext, btrfs, xfs, tmpfs, f2fs, zfs and bcachefs update a folder's times on every change
     const LOCAL: [i64; 7] = [

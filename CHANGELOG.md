@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- `syk pattern -` searches what is piped in and prints each match as it arrives. `syk -- -` still searches for a dash.
+- The index works on macOS, on APFS and HFS+.
+- Building an index again copies the folders that did not change from the old index and lists only the ones that did.
+- `syk --init man` prints a manual page, and `syk --init zsh:` prints the completions without the jump command, for packages.
+- The AUR package installs the manual page and the completions.
+- A tagged release publishes itself to crates.io and the AUR once the binaries are built.
+
 ## 0.1.2
 
 On Linux, syk now keeps an index. It remembers the names below a folder and a signature of the text of every file. A later search uses that after checking every folder for changes, so it finds the same as a search that reads everything. There is nothing to set up: the first search from a terminal below your home folder builds an index of the whole home folder in the background, and every folder below it uses that one index. `syk -A` lists what is stored and removes it again.

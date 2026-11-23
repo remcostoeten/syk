@@ -26,10 +26,11 @@ A command line tool that searches folder names, file names and file contents in 
 - **Arguments in any order.** `syk foo src/ .ts +10kb -2h` is a pattern, a path, an extension, a minimum size and a maximum age, recognised by their shape.
 - **One target or several.** `-n`, `-d` and `-c` search names, folders or contents only, and `-n route -c auth` prints the lines matching auth in files named route.
 - **Groups of names to skip.** Dependency folders and caches such as `node_modules` and `__pycache__` are skipped without an ignore file, lock files are found by name while their contents stay out of the results, and `-u deps` searches a group again.
-- **An index of your home folder.** syk keeps a list of the names and a signature of the text of every file below your home folder in `~/.cache/syk`, built in the background after your first search. Later searches check each folder in it for changes and read only the ones that changed, and a search of contents reads only the files that can hold its pattern. `syk -A` lists the indexes, `syk -A clear` removes them. Linux only.
+- **An index of your home folder.** syk keeps a list of the names and a signature of the text of every file below your home folder in `~/.cache/syk`, built in the background after your first search. Later searches check each folder in it for changes and read only the ones that changed, and a search of contents reads only the files that can hold its pattern. `syk -A` lists the indexes, `syk -A clear` removes them.
 - **Forgiving patterns.** Lower case matches any case, a pattern that is not a valid regular expression is searched as plain text, and a spelling one edit away is tried when nothing is found.
 - **Ranked results.** A name search in a terminal is ordered by how well the name matches, how recent the file is and what you picked before, with the best result next to your prompt.
 - **Act on a result.** `-b` lets you choose one from a list, `-1` prints the best path, `-O` opens it in your editor at the matching line and `-f` runs a command on the results.
+- **Piped input.** `cat app.log | syk error -` searches what is piped in, and prints each match as it arrives.
 - **Output for scripts.** Piped output is plain `path:line:text`, `-J` prints JSON and `-0` separates paths with NUL bytes.
 - **Help you can page through.** `syk -h` opens in a pager with section jumps and search, every flag has its own page, and `syk foo -x` shows how the arguments are read without searching.
 
@@ -43,11 +44,19 @@ A command line tool that searches folder names, file names and file contents in 
 curl --proto '=https' --tlsv1.2 -LsSf https://github.com/remcostoeten/syk/releases/latest/download/syk-search-installer.sh | sh
 ```
 
-### From source
+### Arch Linux
 
 ```bash
-cargo install --git https://github.com/remcostoeten/syk
+yay -S syk-bin
 ```
+
+### From crates.io
+
+```bash
+cargo install syk-search
+```
+
+The crate is called `syk-search`, and the command it installs is `syk`.
 
 `syk --setup` then adds tab completion and the `s` jump command to your shell.
 

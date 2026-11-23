@@ -3,7 +3,6 @@ use std::time::{Duration, Instant};
 
 use crate::{Fixture, Terminal};
 
-#[cfg(target_os = "linux")]
 #[test]
 fn an_index_finds_what_a_walk_finds_while_the_tree_changes() {
     let fixture = Fixture::new();
@@ -88,7 +87,6 @@ fn an_index_finds_what_a_walk_finds_while_the_tree_changes() {
     );
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn files_that_cannot_match_are_not_read_until_they_change() {
     let fixture = Fixture::new();
@@ -153,7 +151,6 @@ fn files_that_cannot_match_are_not_read_until_they_change() {
     assert!(stats.contains("5 files could not match"), "{stats}");
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn an_index_with_many_changed_files_is_built_again() {
     let fixture = Fixture::new();

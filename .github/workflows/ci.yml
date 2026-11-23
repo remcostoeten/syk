@@ -37,3 +37,4 @@ jobs:
       - run: scripts/demo.sh --fast
         env:
           SYK: ${{ github.workspace }}/target/debug/syk
+      - run: python3 scripts/fuzz.py target/debug/syk --seed 1 --trees 1 --rounds 4

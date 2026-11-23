@@ -4,7 +4,6 @@ mod filter;
 mod group;
 mod help;
 mod hidden;
-#[cfg(target_os = "linux")]
 mod index;
 mod load;
 mod output;

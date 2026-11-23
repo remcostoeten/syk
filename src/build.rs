@@ -497,7 +497,7 @@ pub fn build(
         return Err(refuse(
             &real,
             print,
-            "an index works on local Linux file systems only",
+            "an index works on local file systems only",
         ));
     }
     let name = key(&real, print);
@@ -584,6 +584,15 @@ pub fn busy() -> bool {
     })
 }
 
+#[cfg(target_os = "macos")]
+pub fn unplugged() -> bool {
+    std::process::Command::new("/usr/bin/pmset")
+        .args(["-g", "ps"])
+        .output()
+        .is_ok_and(|shown| String::from_utf8_lossy(&shown.stdout).contains("Battery Power"))
+}
+
+#[cfg(not(target_os = "macos"))]
 pub fn unplugged() -> bool {
     let Ok(listing) = fs::read_dir("/sys/class/power_supply") else {
         return false;
@@ -630,6 +639,8 @@ pub fn spawn(root: &Path, flags: &[String]) -> io::Result<()> {
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
             #[cfg(target_os = "linux")]
             libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13);
+            #[cfg(target_os = "macos")]
+            libc::setpriority(libc::PRIO_DARWIN_PROCESS, 0, libc::PRIO_DARWIN_BG);
             Ok(())
         });
     }

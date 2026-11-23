@@ -4,7 +4,7 @@ use crate::flags::{Arity, FLAGS, Flag, Id};
 
 pub const DEFAULT_NAME: &str = "s";
 const KINDS: &str = "file dir link";
-const SHELLS: &str = "fish zsh bash";
+const SHELLS: &str = "fish zsh bash man";
 const GROUPS: &str = "deps cache build lock min media all";
 
 fn choices(flag: &Flag) -> Option<&'static str> {
@@ -25,7 +25,7 @@ pub fn valid(name: &str) -> bool {
 }
 
 fn fish(name: &str) -> String {
-    let mut out = format!(
+    let jump = format!(
         "function {name} --description 'Jump to the best matching folder'
     if test (count $argv) -eq 0
         cd ~
@@ -39,6 +39,7 @@ end
 
 "
     );
+    let mut out = if name.is_empty() { String::new() } else { jump };
     for flag in &FLAGS {
         let summary = flag.summary.replace('\\', "\\\\").replace('\'', "\\'");
         let value = match (flag.arity, choices(flag)) {
@@ -57,6 +58,9 @@ end
 }
 
 fn jump(name: &str) -> String {
+    if name.is_empty() {
+        return String::new();
+    }
     format!(
         "{name}() {{
     if [ \"$#\" -eq 0 ]; then
@@ -75,7 +79,10 @@ fn jump(name: &str) -> String {
 }
 
 fn zsh(name: &str) -> String {
-    let mut out = jump(name);
+    let mut out = match name.is_empty() {
+        true => "#compdef syk\n".to_string(),
+        false => jump(name),
+    };
     out.push_str("_syk() {\n    _arguments -s -S \\\n");
     for flag in &FLAGS {
         let summary = flag
@@ -98,7 +105,11 @@ fn zsh(name: &str) -> String {
             long = flag.long
         );
     }
-    out.push_str("        '*:path:_files'\n}\n(( $+functions[compdef] )) && compdef _syk syk\n");
+    out.push_str("        '*:path:_files'\n}\n");
+    out.push_str(match name.is_empty() {
+        true => "_syk \"$@\"\n",
+        false => "(( $+functions[compdef] )) && compdef _syk syk\n",
+    });
     out
 }
 
@@ -124,7 +135,10 @@ complete -o default -F _syk syk
 
 pub fn script(value: &str) -> Result<String, String> {
     let (shell, name) = value.split_once(':').unwrap_or((value, DEFAULT_NAME));
-    if !valid(name) {
+    if shell.eq_ignore_ascii_case("man") {
+        return Ok(crate::manual::page());
+    }
+    if !name.is_empty() && !valid(name) {
         return Err(format!(
             "{name:?} cannot be the name of a shell function. Use letters, digits and underscores, for example: syk --init {shell}:j"
         ));
@@ -134,7 +148,7 @@ pub fn script(value: &str) -> Result<String, String> {
         "zsh" => Ok(zsh(name)),
         "bash" | "sh" => Ok(bash(name)),
         _ => Err(format!(
-            "there is no setup script for {shell:?}. Use fish, zsh or bash."
+            "there is no setup script for {shell:?}. Use fish, zsh, bash or man."
         )),
     }
 }
@@ -180,6 +194,17 @@ mod tests {
                 .starts_with("jump_to() {")
         );
         assert!(script("fish:my-name").is_err());
+        for shell in ["fish:", "zsh:", "bash:"] {
+            let completions = script(shell).expect("a script");
+            assert!(!completions.contains("syk -t dir -1"), "{shell}");
+            assert!(completions.contains("name"), "{shell}");
+        }
+        assert!(
+            script("zsh:")
+                .expect("a script")
+                .starts_with("#compdef syk")
+        );
+        assert!(script("man").expect("a page").starts_with(".TH SYK 1"));
         assert!(script("powershell").is_err());
     }
 }

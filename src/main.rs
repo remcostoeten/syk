@@ -15,6 +15,7 @@ mod item;
 mod kept;
 mod load;
 mod manage;
+mod manual;
 mod need;
 mod output;
 mod pager;

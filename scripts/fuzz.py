@@ -283,6 +283,8 @@ def trial(syk, env, root, rounds, used):
         if not compare(syk, env, root, f"round {round} after {', '.join(kinds)}", used):
             return False
         if random.random() < 0.35:
+            if random.random() < 0.6:
+                time.sleep(SETTLE)
             for view in random.sample(VIEWS, 2):
                 used["spared"] += b"not listed again" in build(syk, env, root, view).stdout
             if not compare(syk, env, root, f"round {round} with a new index", used):

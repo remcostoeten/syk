@@ -144,7 +144,7 @@ fn crawled(_: &Shared, _: &Query) -> bool {
     false
 }
 
-pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> Outcome {
+fn shared(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> Shared {
     let now = SystemTime::now();
     let cutoffs = query
         .filters
@@ -158,7 +158,7 @@ pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool)
         })
         .collect();
     let gather = matches!(pass, Pass::Gather { .. });
-    let shared = Shared {
+    Shared {
         plan,
         folders: matches!(query.filters.kind, None | Some(Kind::Dir))
             && !query.filters.files_only(),
@@ -195,33 +195,40 @@ pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool)
         filters: query.filters.clone(),
         unread: skips(query, Skip::Contents),
         follow: query.walk.follow,
-    };
+    }
+}
 
-    let sorted = query.walk.sort && !gather;
-    let (stored, advice) = stored(query, sorted);
-    let reread = stored.as_ref().map(|stored| stored.dirty.len());
-    if let Some(stored) = stored {
-        replay(&shared, query, stored, sorted);
-    } else if sorted {
+fn walk(shared: &Shared, query: &Query, sorted: bool) {
+    if sorted {
         let mut builder = walker(query);
         builder.sort_by_file_name(|left, right| left.cmp(right));
-        let mut worker = Worker::new(&shared, 0);
+        let mut worker = Worker::new(shared, 0);
         for result in builder.build() {
             if matches!(worker.visit(result), WalkState::Quit) {
                 break;
             }
         }
-    } else if !crawled(&shared, query) {
+    } else if !crawled(shared, query) {
         let builder = walker(query);
         match few(&builder) {
-            Some(found) => handful(&shared, found, threads(query)),
+            Some(found) => handful(shared, found, threads(query)),
             None => builder.build_parallel().run(|| {
-                let mut worker = Worker::new(&shared, AHEAD);
+                let mut worker = Worker::new(shared, AHEAD);
                 Box::new(move |result| worker.visit(result))
             }),
         }
     }
+}
 
+pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> Outcome {
+    let shared = shared(query, plan, view, pass, keep);
+    let sorted = query.walk.sort && !shared.gather;
+    let (stored, advice) = stored(query, sorted);
+    let reread = stored.as_ref().map(|stored| stored.dirty.len());
+    match stored {
+        Some(stored) => replay(&shared, query, stored, sorted),
+        None => walk(&shared, query, sorted),
+    }
     Outcome {
         found: shared.found.load(Ordering::Relaxed),
         failed: shared.failed.load(Ordering::Relaxed),

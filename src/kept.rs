@@ -1,14 +1,16 @@
 use std::collections::HashSet;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, Metadata};
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+use ignore::overrides::Override;
+
 use crate::group::Skip;
 use crate::output::{Entry, Style, write_entry};
 use crate::pattern::Pattern;
-use crate::query::{Kind, Plan, Query};
+use crate::query::{Kind, Plan, Query, Targets};
 use crate::rank::{self, Block, Habits, Score};
 use crate::search::View;
 use crate::walk::{excludes, skips};
@@ -31,6 +33,64 @@ pub fn ranked(query: &Query, terminal: bool) -> bool {
         query.output.rank == Some(true)
     } else {
         query.output.rank.unwrap_or(terminal && names_only)
+    }
+}
+
+fn below<'a>(roots: &[Vec<u8>], path: &'a [u8]) -> Option<&'a [u8]> {
+    roots.iter().find_map(|root| {
+        let rest = path.strip_prefix(root.as_slice())?;
+        let rest = if root.len() > 1 {
+            rest.strip_prefix(b"/")?
+        } else {
+            rest
+        };
+        (!rest.is_empty()).then_some(rest)
+    })
+}
+
+fn asked(query: &Query, targets: &Targets, metadata: &Metadata) -> bool {
+    let folder = metadata.is_dir();
+    let wanted = match query.filters.kind {
+        None => folder || metadata.is_file(),
+        Some(Kind::Dir) => folder,
+        Some(Kind::File) => metadata.is_file(),
+        Some(Kind::Link) => false,
+    };
+    let target = if folder { targets.dirs } else { targets.files };
+    wanted && target
+}
+
+fn left_out(excluded: &Override, shown: &[u8], folder: bool) -> bool {
+    Path::new(OsStr::from_bytes(shown))
+        .ancestors()
+        .filter(|part| !part.as_os_str().is_empty())
+        .enumerate()
+        .any(|(above, part)| excluded.matched(part, above > 0 || folder).is_ignore())
+}
+
+fn block(
+    shown: &[u8],
+    name: &[u8],
+    hit: (usize, usize),
+    depth: usize,
+    metadata: &Metadata,
+    style: Style<'_>,
+) -> Block {
+    let mut text = Vec::new();
+    let entry = Entry {
+        path: shown,
+        name_at: shown.len().saturating_sub(name.len()),
+        hit: Some(hit),
+        folder: metadata.is_dir(),
+    };
+    write_entry(&mut text, &entry, style);
+    Block {
+        path: shown.to_vec(),
+        quality: rank::quality(name, Some(hit)),
+        depth,
+        modified: metadata.modified().ok(),
+        line: None,
+        text,
     }
 }
 
@@ -68,16 +128,7 @@ pub fn remembered(query: &Query, habits: &Habits, found: &[Block], view: View) -
         .map(|block| habits.absolute(&block.path))
         .collect();
     for path in habits.known() {
-        let below = roots.iter().find_map(|root| {
-            let rest = path.strip_prefix(root.as_slice())?;
-            let rest = if root.len() > 1 {
-                rest.strip_prefix(b"/")?
-            } else {
-                rest
-            };
-            (!rest.is_empty()).then_some(rest)
-        });
-        let Some(below) = below else {
+        let Some(below) = below(&roots, path) else {
             continue;
         };
         let depth = below.split(|byte| *byte == b'/').count();
@@ -96,43 +147,19 @@ pub fn remembered(query: &Query, habits: &Habits, found: &[Block], view: View) -
         let Ok(metadata) = fs::metadata(OsStr::from_bytes(path)) else {
             continue;
         };
-        let folder = metadata.is_dir();
-        let wanted = match query.filters.kind {
-            None => folder || metadata.is_file(),
-            Some(Kind::Dir) => folder,
-            Some(Kind::File) => metadata.is_file(),
-            Some(Kind::Link) => false,
-        };
-        if !wanted || !(if folder { targets.dirs } else { targets.files }) {
+        if !asked(query, targets, &metadata) {
             continue;
         }
+        let folder = metadata.is_dir();
         let shown = habits.relative(path);
         if let Some(excluded) = &excluded
-            && Path::new(OsStr::from_bytes(shown))
-                .ancestors()
-                .filter(|part| !part.as_os_str().is_empty())
-                .enumerate()
-                .any(|(above, part)| excluded.matched(part, above > 0 || folder).is_ignore())
+            && left_out(excluded, shown, folder)
         {
             continue;
         }
-        let mut text = Vec::new();
-        let entry = Entry {
-            path: shown,
-            name_at: shown.len().saturating_sub(name.len()),
-            hit: Some(hit),
-            folder,
-        };
-        write_entry(&mut text, &entry, style);
+        let block = block(shown, name, hit, depth, &metadata, style);
         have.insert(path.to_vec());
-        extra.push(Block {
-            path: shown.to_vec(),
-            quality: rank::quality(name, Some(hit)),
-            depth,
-            modified: metadata.modified().ok(),
-            line: None,
-            text,
-        });
+        extra.push(block);
     }
     extra
 }

@@ -1,5 +1,7 @@
 mod act;
 mod banner;
+mod build;
+mod check;
 mod config;
 #[cfg(target_os = "linux")]
 mod crawl;
@@ -26,6 +28,7 @@ mod report;
 #[cfg(target_os = "linux")]
 mod rule;
 mod run;
+mod scan;
 mod search;
 mod setup;
 mod shell;

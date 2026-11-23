@@ -10,11 +10,14 @@ use std::time::Instant;
 
 use ignore::WalkState;
 
+use crate::build;
+use crate::check::{Fresh, Opened};
 use crate::group::{self, Skip};
-use crate::index::{self, Fresh, Index, Opened, Scan};
+use crate::index::Index;
 use crate::need::Need;
 use crate::query::Query;
 use crate::report::counted;
+use crate::scan::{self, Scan};
 use crate::walk::{excludes, skips, threads, walker};
 use crate::worker::{AHEAD, Shared, Worker};
 
@@ -165,11 +168,11 @@ pub fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
     let index = &stored.index;
     let mut state = vec![0u8; index.folders() as usize];
     for slot in &stored.dirty {
-        state[*slot as usize] |= index::DIRTY;
+        state[*slot as usize] |= scan::DIRTY;
     }
     if let Some(fresh) = stored.fresh {
         for slot in refresh(shared, query, fresh) {
-            state[slot as usize] |= index::GONE;
+            state[slot as usize] |= scan::GONE;
         }
     }
     let excluded = excludes(query).ok().filter(|excluded| !excluded.is_empty());
@@ -186,7 +189,7 @@ pub fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
         depth: query.walk.depth,
         state: &state,
         excluded: excluded.as_ref(),
-        gate: gate.as_ref().map(|gate| gate as &index::Gate<'_>),
+        gate: gate.as_ref().map(|gate| gate as &scan::Gate<'_>),
         verdicts: verdicts.as_ref(),
     };
     let total = index.entries();
@@ -230,7 +233,7 @@ pub fn reindex(mut query: Query, started: Instant) -> ExitCode {
         query.roots[0] = real;
     }
     let root = &query.roots[0];
-    match index::build(root, &print(query), walker(query), threads(query)) {
+    match build::build(root, &print(query), walker(query), threads(query)) {
         Ok(built) => {
             println!(
                 "Indexed {} in {} and the contents of {} below {} in {:.2} s.",
@@ -254,7 +257,7 @@ pub fn background(query: &Query) {
     let Ok(root) = fs::canonicalize(&query.roots[0]) else {
         return;
     };
-    if !index::wanted(&root, &print) {
+    if !build::wanted(&root, &print) {
         return;
     }
     let mut flags = vec!["-U".to_string(), "-u".to_string(), group::EVERY.to_string()];
@@ -269,5 +272,5 @@ pub fn background(query: &Query) {
     }
     let mut folder = root.into_os_string();
     folder.push("/");
-    let _ = index::spawn(Path::new(&folder), &flags);
+    let _ = build::spawn(Path::new(&folder), &flags);
 }

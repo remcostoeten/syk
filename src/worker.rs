@@ -14,7 +14,6 @@ use grep_searcher::{BinaryDetection, Searcher, SearcherBuilder};
 use ignore::{DirEntry, WalkState};
 
 use crate::group::{Skips, ends_with};
-use crate::index::Visit;
 use crate::item::{Form, Item};
 use crate::load::{self, Loaded};
 use crate::need::Need;
@@ -23,6 +22,7 @@ use crate::pattern::Pattern;
 use crate::plan::Compiled;
 use crate::query::{Filters, Kind};
 use crate::rank::{self, Block};
+use crate::scan::Visit;
 use crate::spell::{self, Gather, Seen};
 use crate::stop;
 

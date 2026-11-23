@@ -9,10 +9,10 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::index::Visit;
 use crate::item::{Form, Item};
 use crate::query::Query;
 use crate::rule::{Base, Layer, Rules, Seen};
+use crate::scan::Visit;
 
 const PATIENCE: Duration = Duration::from_millis(2);
 const ROOM: usize = 32 * 1024;

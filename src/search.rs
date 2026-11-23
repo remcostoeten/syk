@@ -17,6 +17,8 @@ use crate::worker::{AHEAD, Found, Shared, Tally, Worker};
 
 const FEW: usize = 128;
 const PATIENCE: Duration = Duration::from_millis(2);
+const LIMIT: Duration = Duration::from_millis(150);
+pub const PROBE: usize = 64;
 
 #[derive(Clone, Copy)]
 pub struct View {
@@ -33,6 +35,7 @@ pub enum Pass {
     First,
     Gather { fold: bool },
     Again,
+    Probe,
 }
 
 pub struct Outcome {
@@ -178,10 +181,10 @@ fn shared(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> 
         } else {
             query.output.context
         },
-        budget: Budget::new(if gather || keep {
-            None
-        } else {
-            query.output.max
+        budget: Budget::new(match pass {
+            Pass::Probe => Some(PROBE),
+            _ if gather || keep => None,
+            _ => query.output.max,
         }),
         found: AtomicBool::new(false),
         failed: AtomicBool::new(false),
@@ -220,14 +223,34 @@ fn walk(shared: &Shared, query: &Query, sorted: bool) {
     }
 }
 
+fn timed(shared: &Shared, work: impl FnOnce()) {
+    let done = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        let timer = scope.spawn(|| {
+            let started = Instant::now();
+            while !done.load(Ordering::Relaxed) && started.elapsed() < LIMIT {
+                std::thread::park_timeout(LIMIT.saturating_sub(started.elapsed()));
+            }
+            shared.budget.stop();
+        });
+        work();
+        done.store(true, Ordering::Relaxed);
+        timer.thread().unpark();
+    });
+}
+
 pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> Outcome {
     let shared = shared(query, plan, view, pass, keep);
     let sorted = query.walk.sort && !shared.gather;
     let (stored, advice) = stored(query, sorted);
     let reread = stored.as_ref().map(|stored| stored.dirty.len());
-    match stored {
+    let work = || match stored {
         Some(stored) => replay(&shared, query, stored, sorted),
         None => walk(&shared, query, sorted),
+    };
+    match pass {
+        Pass::Probe => timed(&shared, work),
+        _ => work(),
     }
     Outcome {
         found: shared.found.load(Ordering::Relaxed),

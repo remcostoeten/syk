@@ -231,6 +231,27 @@ impl Terminal {
         self.wait_for(then);
     }
 
+    fn shown(mut self) -> (String, i32) {
+        let started = Instant::now();
+        let mut ended = None;
+        loop {
+            let mut chunk = [0u8; 8192];
+            match self.screen.read(&mut chunk) {
+                Ok(read) if read > 0 => {
+                    self.seen.push_str(&String::from_utf8_lossy(&chunk[..read]));
+                }
+                _ if ended.is_some() => break,
+                _ => {
+                    ended = self.child.try_wait().expect("wait for syk");
+                    assert!(started.elapsed() < PATIENCE, "syk did not exit");
+                    std::thread::sleep(PAUSE);
+                }
+            }
+        }
+        let status = ended.and_then(|status| status.code()).unwrap_or(-1);
+        (std::mem::take(&mut self.seen), status)
+    }
+
     fn finish(mut self, keys: &str) -> (String, i32) {
         self.screen.write_all(keys.as_bytes()).expect("send keys");
         let started = Instant::now();

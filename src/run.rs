@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use crate::act;
 use crate::kept::{arrange, ranked, remembered, show};
+use crate::output::Layout;
 use crate::pattern::Pattern;
 use crate::pick;
 use crate::plan::{Compiled, compile};
@@ -65,6 +66,28 @@ fn suggest(query: &Query) -> Option<String> {
     };
     let seen = search(query, plan, view(query), Pass::Gather { fold }, false).seen;
     spell::best(seen, source)
+}
+
+fn skipped(query: &mut Query) -> Vec<Vec<u8>> {
+    let plan = match query.walk.all {
+        true => None,
+        false => compile(query).ok(),
+    };
+    let Some(plan) = plan else {
+        return Vec::new();
+    };
+    let wide = View {
+        layout: Layout::List,
+        color: false,
+        live: false,
+        json: false,
+        end: b'\n',
+        links: false,
+    };
+    query.walk.all = true;
+    let found = search(query, plan, wide, Pass::Probe, true);
+    query.walk.all = false;
+    found.blocks.into_iter().map(|block| block.path).collect()
 }
 
 fn retry(query: &Query, view: View, keep: bool) -> Option<Outcome> {
@@ -175,7 +198,7 @@ fn status(found: bool, ran: bool, failed: bool) -> ExitCode {
     }
 }
 
-pub fn run(query: Query) -> ExitCode {
+pub fn run(mut query: Query) -> ExitCode {
     let started = Instant::now();
     if query.walk.index {
         return reindex(query, started);
@@ -236,7 +259,11 @@ pub fn run(query: Query) -> ExitCode {
         return ExitCode::from(130);
     }
     background(&query, advice, worn, walked);
-    hints(&query, found, tally.withheld);
+    let left = match found || query.output.exact || !io::stderr().is_terminal() {
+        true => Vec::new(),
+        false => skipped(&mut query),
+    };
+    hints(&query, found, tally.withheld, &left);
     status(found, ran, failed)
 }
 

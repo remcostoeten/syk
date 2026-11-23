@@ -15,6 +15,7 @@
 - A new index takes over the signatures of files that did not change, so building one again reads only the files that did.
 - A search of `/` skips `/proc` and `/sys`, unless `-I` or `-a` is given or one of them is named as the path.
 - `-A` lists the stored indexes with their size, age and folder. `-A clear` removes all of them or those of the given folders, and `-A prune` removes those whose folder is gone.
+- A search that finds nothing says on the terminal when hidden entries, ignored files or a skipped group do have results, and which flag shows them. `-X` skips that look.
 - The exit status is 2 when a file or folder could not be read, also when other results were found.
 - `-J` adds `path_hex` to a path that is not valid UTF-8, so the exact file can still be found.
 - Groups of names are skipped as a whole. `deps` (node_modules, venv and other dependency folders) and `cache` (__pycache__, .next and other caches) are skipped without asking, also where no ignore file lists them.

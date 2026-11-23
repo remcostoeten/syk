@@ -1,9 +1,10 @@
 use std::io::{self, IsTerminal};
 use std::time::Duration;
 
-use crate::group::{self, Group, Skip};
+use crate::group::{self, Group, Skip, Skips};
 use crate::output::Layout;
 use crate::query::{Plan, Query, Terms};
+use crate::search::PROBE;
 use crate::worker::{Tally, Withheld};
 
 pub fn grouped(number: u64) -> String {
@@ -98,7 +99,114 @@ fn covered(query: &Query) -> Option<(&Group, &str)> {
         .find_map(|term| group::covering(&query.filters.groups, term))
 }
 
-pub fn hints(query: &Query, found: bool, withheld: Withheld) {
+#[derive(Clone, PartialEq, Eq)]
+enum Left {
+    Group(String),
+    Hidden,
+    Git,
+    Ignored,
+}
+
+impl Left {
+    fn told(&self, count: usize) -> String {
+        let count = match count >= PROBE {
+            true => format!("{PROBE} or more"),
+            false => count.to_string(),
+        };
+        match self {
+            Left::Group(name) => format!("{count} in the group {name} (add -u {name})"),
+            Left::Hidden => format!("{count} in hidden files or folders (add -H)"),
+            Left::Git => format!("{count} inside .git (add -a)"),
+            Left::Ignored => format!("{count} that an ignore file leaves out (add -I)"),
+        }
+    }
+}
+
+fn below<'a>(query: &Query, path: &'a [u8]) -> &'a [u8] {
+    let bare = |bytes: &'a [u8]| bytes.strip_prefix(b"./").unwrap_or(bytes);
+    let inside = query.roots.iter().find_map(|root| {
+        let root = root.as_os_str().as_encoded_bytes();
+        let root = root.strip_prefix(b"./").unwrap_or(root);
+        let root = root.strip_suffix(b"/").unwrap_or(root);
+        let rest = bare(path).strip_prefix(root)?;
+        (root != b"." && (rest.is_empty() || rest.starts_with(b"/"))).then_some(rest)
+    });
+    inside.unwrap_or(bare(path))
+}
+
+fn reason(query: &Query, groups: &[(String, Skips)], unread: &Skips, path: &[u8]) -> Option<Left> {
+    let walk = &query.walk;
+    let parts: Vec<&[u8]> = below(query, path)
+        .split(|byte| *byte == b'/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let grouped = |part: &&[u8]| groups.iter().find(|(_, skips)| skips.matches(part));
+    if let Some((name, _)) = parts.iter().find_map(grouped) {
+        return Some(Left::Group(name.clone()));
+    }
+    if !walk.hidden && parts.iter().any(|part| part.starts_with(b".")) {
+        return Some(Left::Hidden);
+    }
+    if walk.hidden && parts.contains(&&b".git"[..]) {
+        return Some(Left::Git);
+    }
+    let withheld = parts.last().is_some_and(|name| unread.matches(name));
+    (!walk.no_ignore && !withheld).then_some(Left::Ignored)
+}
+
+fn left(query: &Query, paths: &[Vec<u8>]) -> Option<String> {
+    let ruled = !query.walk.no_ignore;
+    let whole = |group: &&Group| ruled && group.skip == Skip::Whole;
+    let groups: Vec<(String, Skips)> = query
+        .filters
+        .groups
+        .iter()
+        .filter(whole)
+        .map(|group| {
+            let skips = Skips::new(std::slice::from_ref(group), Skip::Whole);
+            (group.name.clone(), skips)
+        })
+        .collect();
+    let unread = match ruled {
+        true => Skips::new(&query.filters.groups, Skip::Contents),
+        false => Skips::none(),
+    };
+    let mut counts: Vec<(Left, usize)> = Vec::new();
+    for found in paths
+        .iter()
+        .filter_map(|path| reason(query, &groups, &unread, path))
+    {
+        match counts.iter_mut().find(|(known, _)| *known == found) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((found, 1)),
+        }
+    }
+    counts.sort_by_key(|(found, _)| match found {
+        Left::Group(name) => (0, name.clone()),
+        Left::Hidden => (1, String::new()),
+        Left::Git => (2, String::new()),
+        Left::Ignored => (3, String::new()),
+    });
+    let told: Vec<String> = counts
+        .iter()
+        .map(|(found, count)| found.told(*count))
+        .collect();
+    let every = match told.len() {
+        0 => return None,
+        1 => "",
+        _ => " Add -a to search everything.",
+    };
+    Some(format!(
+        "nothing matched, but places that are skipped have results: {}.{every}",
+        told.join(", ")
+    ))
+}
+
+pub fn hints(query: &Query, found: bool, withheld: Withheld, skipped: &[Vec<u8>]) {
+    let left = left(query, skipped);
+    if let Some(left) = &left {
+        eprintln!("syk: {left}");
+    }
     if !found
         && io::stderr().is_terminal()
         && let Some(terms) = several(query)
@@ -110,6 +218,7 @@ pub fn hints(query: &Query, found: bool, withheld: Withheld) {
         );
     }
     if !found
+        && left.is_none()
         && io::stderr().is_terminal()
         && let Some((group, name)) = covered(query)
     {

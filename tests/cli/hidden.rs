@@ -1,4 +1,6 @@
 use crate::Fixture;
+#[cfg(target_os = "linux")]
+use crate::Terminal;
 
 #[test]
 fn hidden_and_ignored_entries_are_opt_in() {
@@ -84,4 +86,26 @@ fn the_global_gitignore_is_read_from_where_git_keeps_it() {
     assert_eq!(listed(&[]), listed(&["-o"]));
     fixture.outside("other", "needle\n");
     assert!(listed(&[]).is_empty() && listed(&["-o"]).is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_search_that_finds_nothing_says_what_the_skipped_places_hold() {
+    let fixture = Fixture::new();
+    fixture.file("node_modules/pkg/secret.js", "x\n");
+    let said = |args: &[&str]| Terminal::open(&fixture, args, true).shown();
+    let (text, status) = said(&["-n", "secret"]);
+    assert_eq!(status, 1);
+    assert!(
+        text.contains("1 in the group deps (add -u deps), 1 in hidden files or folders (add -H)"),
+        "{text}"
+    );
+    assert!(text.contains("Add -a to search everything."), "{text}");
+    let (text, _) = said(&["-n", "skip"]);
+    assert!(
+        text.contains("1 that an ignore file leaves out (add -I)."),
+        "{text}"
+    );
+    assert!(!said(&["-n", "secret", "-X"]).0.contains("skipped"));
+    assert!(!said(&["-n", "zzzz"]).0.contains("skipped"));
 }

@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use crate::filter::{self, Parsed};
 use crate::flags::{self, Arity, Flag, Id};
 use crate::group;
+use crate::language;
 use crate::manage::Action;
 use crate::piped::LABEL;
 use crate::query::{
@@ -404,10 +405,19 @@ impl Draft {
                 for part in text.split(',') {
                     self.filters.extensions.push(extension(part).ok_or_else(|| {
                         format!(
-                            "{part:?} is not an extension. Examples: -e ts, -e ts,tsx, -e d.ts."
+                            "{part:?} is not an extension. Examples: -e ts, -e ts,tsx, -e rust."
                         )
                     })?);
+                    let named = language::extensions(part).iter();
+                    self.filters
+                        .extensions
+                        .extend(named.map(|name| format!(".{name}")));
                 }
+            }
+            Id::Changed => {
+                self.filters.changed = Some(Default::default());
+                self.walk.hidden = true;
+                self.walk.no_index = true;
             }
             Id::Exclude => {
                 for part in text.split(',').filter(|part| !part.is_empty()) {
@@ -516,6 +526,9 @@ impl Draft {
         if self.output.json && self.output.null {
             return Err("-J and -0 are two different output formats. Use one of them.".to_string());
         }
+        if self.walk.index && self.filters.changed.is_some() {
+            return Err("-y builds an index of a folder, so it cannot go with -Q.".to_string());
+        }
         let bound = self
             .slots
             .iter()
@@ -575,6 +588,7 @@ fn fits_a_pipe(plan: &Plan, filters: &Filters, output: &Output, walk: &Walk) -> 
         || !filters.excludes.is_empty()
         || !filters.sizes.is_empty()
         || !filters.ages.is_empty()
+        || filters.changed.is_some()
         || filters.kind.is_some();
     if filtered {
         return Err(

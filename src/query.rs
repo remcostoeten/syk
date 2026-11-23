@@ -1,4 +1,6 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use crate::group::Group;
 
@@ -54,11 +56,15 @@ pub struct Filters {
     pub sizes: Vec<SizeFilter>,
     pub ages: Vec<AgeFilter>,
     pub kind: Option<Kind>,
+    pub changed: Option<Arc<HashSet<PathBuf>>>,
 }
 
 impl Filters {
     pub fn files_only(&self) -> bool {
-        !self.extensions.is_empty() || !self.sizes.is_empty() || !self.ages.is_empty()
+        !self.extensions.is_empty()
+            || !self.sizes.is_empty()
+            || !self.ages.is_empty()
+            || self.changed.is_some()
     }
 }
 

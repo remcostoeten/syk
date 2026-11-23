@@ -1,8 +1,10 @@
 use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::act;
+use crate::changed;
 use crate::kept::{arrange, ranked, remembered, show};
 use crate::output::Layout;
 use crate::pattern::Pattern;
@@ -202,6 +204,15 @@ pub fn run(mut query: Query) -> ExitCode {
     let started = Instant::now();
     if query.walk.index {
         return reindex(query, started);
+    }
+    if query.filters.changed.is_some() {
+        match changed::load(&query.roots) {
+            Ok(paths) => query.filters.changed = Some(Arc::new(paths)),
+            Err(error) => {
+                eprintln!("syk: {error}");
+                return ExitCode::from(2);
+            }
+        }
     }
     stop::watch();
     let plan = match compile(&query) {

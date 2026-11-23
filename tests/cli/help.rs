@@ -81,7 +81,12 @@ fn an_unknown_letter_gets_no_far_fetched_suggestion() {
             .errors(&["-v"])
             .contains("Did you mean -V, --version?")
     );
-    assert!(!fixture.errors(&["-q"]).contains("Did you mean"));
+    assert!(
+        fixture
+            .errors(&["-q"])
+            .contains("Did you mean -Q, --uncommitted?")
+    );
+    assert!(!fixture.errors(&["-@"]).contains("Did you mean"));
     assert!(
         fixture
             .errors(&["--versoin"])

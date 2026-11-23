@@ -31,6 +31,8 @@ A command line tool that searches folder names, file names and file contents in 
 - **Ranked results.** A name search in a terminal is ordered by how well the name matches, how recent the file is and what you picked before, with the best result next to your prompt.
 - **Act on a result.** `-b` lets you choose one from a list, `-1` prints the best path, `-O` opens it in your editor at the matching line and `-f` runs a command on the results.
 - **Piped input.** `cat app.log | syk error -` searches what is piped in, and prints each match as it arrives.
+- **Your current changes.** `syk -Q todo` searches only the files that git reports as changed or new.
+- **Language filters.** `syk auth -e typescript` covers `.ts`, `.tsx`, `.mts` and `.cts`, and `-e web` covers markup, styles and scripts.
 - **Output for scripts.** Piped output is plain `path:line:text`, `-J` prints JSON and `-0` separates paths with NUL bytes.
 - **Help you can page through.** `syk -h` opens in a pager with section jumps and search, every flag has its own page, and `syk foo -x` shows how the arguments are read without searching.
 
@@ -58,7 +60,7 @@ cargo install syk-search
 
 The crate is called `syk-search`, and the command it installs is `syk`.
 
-`syk --setup` then adds tab completion and the `s` jump command to your shell.
+`syk --setup` then adds tab completion and the `s` jump command to your shell, and `syk --setup man` installs the manual page.
 
 ## Development
 

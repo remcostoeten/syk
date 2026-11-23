@@ -434,6 +434,11 @@ impl<'a> Worker<'a> {
         {
             return None;
         }
+        if let Some(changed) = &shared.filters.changed
+            && !changed.contains(entry.path())
+        {
+            return None;
+        }
         if shared.stat && !self.passes_stat(entry) {
             return None;
         }

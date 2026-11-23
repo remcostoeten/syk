@@ -7,6 +7,9 @@
 - Building an index again copies the folders that did not change from the old index and lists only the ones that did.
 - `syk --init man` prints a manual page, and `syk --init zsh:` prints the completions without the jump command, for packages.
 - The AUR package installs the manual page and the completions.
+- `syk --setup man` installs the manual page next to the program, for installs through cargo or the install script.
+- `-Q`, `--uncommitted` searches only the files that git reports as changed or new.
+- `-e` takes language names such as `rust`, `typescript` and `web`, which stand for all their extensions.
 - A tagged release publishes itself to crates.io and the AUR once the binaries are built.
 
 ## 0.1.2

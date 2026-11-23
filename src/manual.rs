@@ -1,4 +1,6 @@
 use std::fmt::Write;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use crate::flags::{Arity, FLAGS, Flag, Group};
 
@@ -82,9 +84,44 @@ pub fn page() -> String {
     out
 }
 
+fn place(program: &Path) -> Option<PathBuf> {
+    let prefix = program.parent()?.parent()?;
+    Some(prefix.join("share/man/man1/syk.1"))
+}
+
+pub fn install() -> Result<String, String> {
+    let program = std::env::current_exe()
+        .and_then(fs::canonicalize)
+        .map_err(|error| format!("could not find the syk program: {error}"))?;
+    let path =
+        place(&program).ok_or_else(|| format!("{} has no folder above it.", program.display()))?;
+    let text = page();
+    if fs::read_to_string(&path).is_ok_and(|present| present == text) {
+        return Ok(format!("Already installed: {}", path.display()));
+    }
+    let written = path
+        .parent()
+        .map_or(Ok(()), fs::create_dir_all)
+        .and_then(|()| fs::write(&path, text));
+    written.map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    Ok(format!(
+        "Installed {}. Open it with: man syk",
+        path.display()
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_page_goes_next_to_the_program() {
+        assert_eq!(
+            place(Path::new("/home/me/.cargo/bin/syk")),
+            Some(PathBuf::from("/home/me/.cargo/share/man/man1/syk.1"))
+        );
+        assert_eq!(place(Path::new("/syk")), None);
+    }
 
     #[test]
     fn the_page_names_every_flag_and_no_line_starts_a_stray_request() {

@@ -1,6 +1,7 @@
 mod act;
 mod banner;
 mod build;
+mod changed;
 mod check;
 mod config;
 #[cfg(target_os = "linux")]
@@ -13,6 +14,7 @@ mod help;
 mod index;
 mod item;
 mod kept;
+mod language;
 mod load;
 mod manage;
 mod manual;

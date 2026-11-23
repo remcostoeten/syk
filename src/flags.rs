@@ -4,6 +4,7 @@ pub enum Id {
     Dir,
     Content,
     Ext,
+    Changed,
     Exclude,
     Size,
     Modified,
@@ -167,7 +168,7 @@ fn distance(left: &str, right: &str) -> usize {
     row[right.len()]
 }
 
-pub static FLAGS: [Flag; 51] = [
+pub static FLAGS: [Flag; 52] = [
     Flag {
         id: Id::Name,
         short: 'n',
@@ -253,15 +254,33 @@ pub static FLAGS: [Flag; 51] = [
         arity: Arity::Required("EXT"),
         group: Group::Filter,
         summary: "Only files with this extension.",
-        detail: "Keeps files whose name ends in .EXT, ignoring case. Give several extensions separated by commas, or repeat the flag. A file has to match one of them. Compound extensions such as d.ts and tar.gz work.\n\nThe shorthand is a bare token that starts with a dot or with *. such as .ts or '*.ts'. Keep the quotes around the second form: unquoted, the shell replaces *.ts with the matching file names in the current folder, or stops with an error when there are none. A token like that is read as a path instead when it exists on disk, for example .github.\n\nWhile an extension filter is active, folders are not reported.",
+        detail: "Keeps files whose name ends in .EXT, ignoring case. Give several extensions separated by commas, or repeat the flag. A file has to match one of them. Compound extensions such as d.ts and tar.gz work.\n\nA language name stands for its extensions: c++, config, csharp, golang, javascript, kotlin, markdown, python, ruby, rust, shell, typescript and web. A plain extension stays exact, so -e ts does not include tsx.\n\nThe shorthand is a bare token that starts with a dot or with *. such as .ts or '*.ts'. Keep the quotes around the second form: unquoted, the shell replaces *.ts with the matching file names in the current folder, or stops with an error when there are none. A token like that is read as a path instead when it exists on disk, for example .github.\n\nWhile an extension filter is active, folders are not reported.",
         examples: &[
             ("syk foo .ts", "foo in TypeScript files"),
             ("syk foo '*.ts'", "the same, written as a quoted wildcard"),
             ("syk foo -e ts,tsx", "the same for two extensions"),
+            ("syk foo -e typescript", "every TypeScript extension"),
+            ("syk foo -e web", "HTML, styles, scripts and components"),
             ("syk .md", "list every Markdown file"),
             ("syk -c import .d.ts", "a compound extension"),
         ],
-        related: &[Id::Type, Id::Size],
+        related: &[Id::Changed, Id::Type, Id::Size],
+    },
+    Flag {
+        id: Id::Changed,
+        short: 'Q',
+        long: "uncommitted",
+        aliases: &["dirty"],
+        arity: Arity::Switch,
+        group: Group::Filter,
+        summary: "Only files git reports as changed or new.",
+        detail: "Keeps the files that git status lists below the searched folder: edited, staged and untracked files. Deleted files have nothing left to search. Hidden files count, because git tracks them too.\n\nFiles that git ignores stay out, and so do the groups syk skips by default, such as lock files. -u lock searches those again.\n\nFolders are not reported, and the search walks the folder instead of using an index. Outside a git repository it stops with an error.",
+        examples: &[
+            ("syk -Q todo", "todo in the files you are working on"),
+            ("syk -Q -n", "list every changed file"),
+            ("syk -Q auth -e rust", "auth in changed Rust files"),
+        ],
+        related: &[Id::Ext, Id::Modified, Id::Unignore],
     },
     Flag {
         id: Id::Exclude,
@@ -964,9 +983,10 @@ pub static FLAGS: [Flag; 51] = [
         arity: Arity::Optional("SHELL"),
         group: Group::Other,
         summary: "Add the shell setup to your shell configuration.",
-        detail: "Finds where your shell configuration lives and adds the line that loads the output of --init, so that completions and the jump command s work in every new shell. SHELL is fish, zsh or bash, and defaults to the shell in $SHELL. A name after a colon renames the jump command: syk --setup fish:j.\n\nIt does not assume a standard layout. It follows symbolic links and sourced files from the file your shell reads first, and looks at how tools such as zoxide and starship are loaded there. When such a tool has a small file of its own, syk gets one next to it, written the same way. When it is a line in a larger file, syk gets a line next to it. Otherwise the standard place is used: conf.d for fish, and .zshrc or .bashrc for the others.\n\nNothing is written before you have seen the change and answered y. After writing, a new shell is started to check that s exists. When it does not, the change is undone and the standard place is offered.\n\nsyk --setup agent prints instructions for an AI coding agent, for a configuration that someone has to read first.",
+        detail: "Finds where your shell configuration lives and adds the line that loads the output of --init, so that completions and the jump command s work in every new shell. SHELL is fish, zsh or bash, and defaults to the shell in $SHELL. A name after a colon renames the jump command: syk --setup fish:j.\n\nIt does not assume a standard layout. It follows symbolic links and sourced files from the file your shell reads first, and looks at how tools such as zoxide and starship are loaded there. When such a tool has a small file of its own, syk gets one next to it, written the same way. When it is a line in a larger file, syk gets a line next to it. Otherwise the standard place is used: conf.d for fish, and .zshrc or .bashrc for the others.\n\nNothing is written before you have seen the change and answered y. After writing, a new shell is started to check that s exists. When it does not, the change is undone and the standard place is offered.\n\nsyk --setup agent prints instructions for an AI coding agent, for a configuration that someone has to read first.\n\nsyk --setup man installs the manual page next to the syk program, in ../share/man/man1, where man finds it through your PATH.",
         examples: &[
             ("syk --setup", "set up the shell you are using"),
+            ("syk --setup man", "install the manual page"),
             (
                 "syk --setup zsh:j",
                 "set up zsh, with the jump command called j",

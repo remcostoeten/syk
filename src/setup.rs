@@ -675,6 +675,15 @@ fn install(shell: Shell, function: &str, sources: &[Source], home: &Path) -> Exi
 }
 
 pub fn run(value: Option<&str>) -> ExitCode {
+    if value.is_some_and(|value| value.eq_ignore_ascii_case("man")) {
+        return match crate::manual::install() {
+            Ok(message) => {
+                println!("{message}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => fail(&error),
+        };
+    }
     let Some(home) = std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|home| home.is_absolute())

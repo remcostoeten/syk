@@ -123,6 +123,9 @@ fn filters(out: &mut String, query: &Query) {
     if !filters.extensions.is_empty() {
         lines.push(format!("name ends in {}", filters.extensions.join(" or ")));
     }
+    if filters.changed.is_some() {
+        lines.push("only files that git reports as changed or new".to_string());
+    }
     for size in &filters.sizes {
         let side = if size.at_least { "at least" } else { "at most" };
         lines.push(format!("size {side} {} bytes ({})", size.bytes, size.text));

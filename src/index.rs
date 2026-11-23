@@ -33,6 +33,7 @@ const BARE: u8 = 2;
 const STRIDE: u32 = 512;
 const DENSE: u32 = 8;
 const KEPT: usize = 24;
+const SIGNED: u64 = 1 << 30;
 const LOCKED: Duration = Duration::from_secs(600);
 const REFUSED: Duration = Duration::from_secs(24 * 60 * 60);
 const RESTED: Duration = Duration::from_secs(60);
@@ -1121,10 +1122,16 @@ fn prune(store: &Path) {
         .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
         .collect();
     kept.sort();
-    let extra = kept.len().saturating_sub(KEPT);
-    for (_, path) in kept.into_iter().take(extra) {
-        let _ = fs::remove_file(path.with_extension("sig"));
-        let _ = fs::remove_file(path);
+    let mut held = 0;
+    for (at, (_, path)) in kept.into_iter().rev().enumerate() {
+        let signs = path.with_extension("sig");
+        held += fs::metadata(&signs).map_or(0, |found| found.len());
+        if at >= KEPT || held > SIGNED {
+            let _ = fs::remove_file(signs);
+        }
+        if at >= KEPT {
+            let _ = fs::remove_file(path);
+        }
     }
 }
 

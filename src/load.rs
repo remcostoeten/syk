@@ -47,6 +47,25 @@ pub fn fill(mut file: File, buffer: &mut Vec<u8>, mut patient: bool) -> io::Resu
     Ok(Loaded::Large(file))
 }
 
+pub fn peek(file: &mut File, buffer: &mut [u8]) -> io::Result<(usize, bool)> {
+    match glance(file, buffer) {
+        Ok(read) => Ok((read, true)),
+        Err(_) => file.read(buffer).map(|read| (read, false)),
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub fn forget(file: &File) {
+    use std::os::fd::AsRawFd;
+
+    unsafe {
+        libc::posix_fadvise(file.as_raw_fd(), 0, 0, libc::POSIX_FADV_DONTNEED);
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn forget(_: &File) {}
+
 #[cfg(all(target_os = "linux", any(target_env = "gnu", target_env = "musl")))]
 fn glance(file: &File, buffer: &mut [u8]) -> io::Result<usize> {
     use std::os::fd::AsRawFd;

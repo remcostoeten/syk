@@ -8,18 +8,19 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use memmap2::Mmap;
 
 use crate::index::{Index, SLACK, long, word};
-use crate::load::{MARKS, WHOLE};
+use crate::load::{self, MARKS, WHOLE};
 use crate::need::Need;
 
-const MAGIC: &[u8; 8] = b"syksig01";
-const HEAD: usize = 96;
+const MAGIC: &[u8; 8] = b"syksig02";
+const HEAD: usize = 128;
 const MARK: usize = 48;
-const CLASSES: usize = 15;
+const CLASSES: usize = 18;
 const SMALLEST: usize = 64;
 const LARGEST: u64 = 64 << 20;
 const ROOM: usize = 256 << 20;
 const BINARY: u8 = 0xFF;
 const STRIDE: u32 = 256;
+const FIRST: usize = 4096;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub struct Seal {
@@ -96,8 +97,7 @@ impl Signer {
         }
     }
 
-    fn fill(&mut self, file: &mut File) -> io::Result<usize> {
-        let mut length = 0;
+    fn fill(&mut self, file: &mut File, mut length: usize) -> io::Result<usize> {
         while length < self.chunk.len() {
             match file.read(&mut self.chunk[length..]) {
                 Ok(0) => break,
@@ -148,15 +148,32 @@ impl Signer {
         let Ok(mut file) = File::open(path) else {
             return Signed::Unknown;
         };
-        let Ok(mut length) = self.fill(&mut file) else {
+        let Ok((length, warm)) = load::peek(&mut file, &mut self.chunk[..FIRST]) else {
             return Signed::Unknown;
         };
-        let head = &self.chunk[..length];
+        let signed = self.read(&mut file, length, size);
+        if !warm {
+            load::forget(&file);
+        }
+        signed
+    }
+
+    fn read(&mut self, file: &mut File, first: usize, size: u64) -> Signed {
+        let head = &self.chunk[..first];
         if MARKS.iter().any(|mark| head.starts_with(mark)) {
             return Signed::Unknown;
         }
         if memchr::memchr(0, head).is_some() {
             return Signed::Binary;
+        }
+        let Ok(mut length) = self.fill(file, first) else {
+            return Signed::Unknown;
+        };
+        if memchr::memchr(0, &self.chunk[..length]).is_some() {
+            return Signed::Binary;
+        }
+        if size > LARGEST {
+            return Signed::Unknown;
         }
         let wanted = usize::try_from(size.max(length as u64))
             .unwrap_or(usize::MAX)
@@ -169,7 +186,7 @@ impl Signer {
         (self.gram, self.run) = (0, 0);
         while length > 0 {
             self.feed(length);
-            length = match self.fill(&mut file) {
+            length = match self.fill(file, 0) {
                 Ok(length) => length,
                 Err(_) => return Signed::Unknown,
             };
@@ -288,9 +305,8 @@ pub fn build(index: &Index, root: &[u8], threads: usize, partial: &Path) -> io::
                         root,
                         from..from.saturating_add(STRIDE),
                         &mut |entry, path| {
-                            let fit =
-                                |seal: &Seal| !seal.recent(index.built()) && seal.size <= LARGEST;
-                            if let Some(seal) = Seal::read(path).filter(fit) {
+                            let settled = |seal: &Seal| !seal.recent(index.built());
+                            if let Some(seal) = Seal::read(path).filter(settled) {
                                 found.push((entry, seal, signer.sign(path, seal.size)));
                             }
                         },

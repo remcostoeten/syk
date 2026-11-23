@@ -6,7 +6,7 @@ use crate::pager::{
 };
 use crate::rank::Block;
 
-const NUMBER: &str = "\x1b[32m";
+const NUMBER: &str = "\x1b[38;5;39m";
 const POINTER: &str = "> ";
 
 pub struct Item {

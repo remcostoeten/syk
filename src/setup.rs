@@ -653,12 +653,28 @@ fn install(shell: Shell, function: &str, sources: &[Source], home: &Path) -> Exi
                 println!(
                     "Done. A new {name} has {function} and completions for syk. Open a new shell and try: {function} <part of a folder name>"
                 );
+                let look = Look::of(&io::stdout());
+                if look.banner && look.logo {
+                    banner::show_welcome(
+                        &format!("{name} completions & {function} active in new shells"),
+                        Some(function),
+                        look,
+                    );
+                }
                 return ExitCode::SUCCESS;
             }
             None => {
                 println!(
                     "Written. {name} could not be started to check it, so open a new shell and try: {function} <part of a folder name>"
                 );
+                let look = Look::of(&io::stdout());
+                if look.banner && look.logo {
+                    banner::show_welcome(
+                        &format!("{name} setup written — open a new shell to use {function}"),
+                        Some(function),
+                        look,
+                    );
+                }
                 return ExitCode::SUCCESS;
             }
             Some(false) => {
@@ -683,6 +699,14 @@ pub fn run(value: Option<&str>) -> ExitCode {
             }
             Err(error) => fail(&error),
         };
+    }
+    if value.is_some_and(|value| value.eq_ignore_ascii_case("welcome")) {
+        banner::show_welcome(
+            "installed — run syk --setup for completions & s",
+            None,
+            Look::of(&io::stdout()),
+        );
+        return ExitCode::SUCCESS;
     }
     let Some(home) = std::env::var_os("HOME")
         .map(PathBuf::from)

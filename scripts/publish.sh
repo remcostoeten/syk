@@ -52,6 +52,7 @@ package() {
         -e "s/^sha256sums_x86_64=.*/sha256sums_x86_64=('$x86')/" \
         -e "s/^sha256sums_aarch64=.*/sha256sums_aarch64=('$arm')/" \
         packaging/aur/PKGBUILD >"$folder/PKGBUILD"
+    cp packaging/aur/syk-bin.install "$folder/syk-bin.install"
     if command -v makepkg >/dev/null; then
         (cd "$folder" && makepkg -f --noconfirm --nodeps && makepkg --printsrcinfo >.SRCINFO)
     else
@@ -76,8 +77,8 @@ publish_aur() {
     printf '%s\n' "$AUR_HOST_KEY" >"$work/hosts"
     export GIT_SSH_COMMAND="ssh -i $work/key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$work/hosts"
     git clone -q ssh://aur@aur.archlinux.org/syk-bin.git "$work/aur"
-    cp "$work/build/PKGBUILD" "$work/build/.SRCINFO" "$work/aur/"
-    git -C "$work/aur" add PKGBUILD .SRCINFO
+    cp "$work/build/PKGBUILD" "$work/build/.SRCINFO" "$work/build/syk-bin.install" "$work/aur/"
+    git -C "$work/aur" add PKGBUILD .SRCINFO syk-bin.install
     if git -C "$work/aur" diff --cached --quiet; then
         echo "publish: the AUR has $VERSION already."
         return

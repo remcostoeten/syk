@@ -17,6 +17,8 @@ install-path = "CARGO_HOME"
 install-updater = false
 # Whether to publish GitHub attestations for the artifacts
 github-attestations = true
+# Message printed when the shell installer finishes
+install-success-msg = "Wolkom! syk is installed. Run 'syk --setup' for shell completions & s, or 'syk --setup welcome' for a quick tour."
 
 [dist.github-custom-runners]
 aarch64-apple-darwin = "macos-latest"

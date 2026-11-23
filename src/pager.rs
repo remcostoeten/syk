@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicPtr, Ordering};
 pub const RESET: &str = "\x1b[0m";
 pub const BOLD: &str = "\x1b[1m";
 pub const DIM: &str = "\x1b[2m";
-pub const PLACE: &str = "\x1b[1;36m";
+pub const PLACE: &str = "\x1b[1;38;5;39m";
 
 pub const ENTER: &str = "\x1b[?1049h\x1b[?25l\x1b[?7l";
 pub const LEAVE: &str = "\x1b[?7h\x1b[?25h\x1b[?1049l";

@@ -9,6 +9,7 @@ depends=('glibc' 'libgcc')
 provides=('syk')
 conflicts=('syk')
 options=('!debug' '!strip')
+install=syk-bin.install
 source_x86_64=("syk-$pkgver-x86_64.tar.xz::$url/releases/download/v$pkgver/syk-search-x86_64-unknown-linux-gnu.tar.xz")
 source_aarch64=("syk-$pkgver-aarch64.tar.xz::$url/releases/download/v$pkgver/syk-search-aarch64-unknown-linux-gnu.tar.xz")
 sha256sums_x86_64=('05162d1f734ca58764cb105c422692189c5ccee992e4ad62e30ff6df984da1c3')

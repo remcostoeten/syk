@@ -70,7 +70,7 @@ fn help_that_fits_or_is_switched_off_is_printed_in_one_piece() {
     let mut terminal = Terminal::open(&fixture, &["-h", "-G", "-B"], false);
     terminal.wait_for("USAGE");
     assert!(terminal.seen.contains("  syk "));
-    assert!(!terminal.seen.contains("|__/"));
+    assert!(!terminal.seen.contains("▄▄████▀"));
 }
 
 #[test]

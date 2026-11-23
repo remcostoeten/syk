@@ -15,10 +15,10 @@ const QUOTED: usize = 3;
 const RESET: &str = "\x1b[0m";
 const BOLD: &str = "\x1b[1m";
 const DIM: &str = "\x1b[2m";
-const PATTERN: &str = "\x1b[1;31m";
-const PATH: &str = "\x1b[1;34m";
-const FILTER: &str = "\x1b[33m";
-const FLAG: &str = "\x1b[36m";
+const PATTERN: &str = "\x1b[1;38;5;204m";
+const PATH: &str = "\x1b[1;38;5;135m";
+const FILTER: &str = "\x1b[38;5;214m";
+const FLAG: &str = "\x1b[38;5;39m";
 const NONE: &str = "";
 const RULE: &str = "─";
 

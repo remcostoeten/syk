@@ -222,3 +222,14 @@ fn setup_prints_instructions_for_an_agent() {
     }
     assert_eq!(home.setup("tcsh", "").1, 2);
 }
+
+#[test]
+fn setup_prints_the_welcome_card() {
+    let fixture = Fixture::new();
+    let (card, status) = fixture.run(&["--setup", "welcome"]);
+    assert_eq!(status, 0);
+    assert!(!card.contains('\x1b'));
+    assert!(card.contains("Wolkom! syk"), "{card}");
+    assert!(card.contains("TRY FIRST"), "{card}");
+    assert!(card.contains("syk --setup"), "{card}");
+}

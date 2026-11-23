@@ -10,7 +10,10 @@ import tempfile
 import time
 from pathlib import Path
 
-ABOUT = "Time syk against ripgrep, fd, find and grep on queries that print the same results."
+ABOUT = (
+    "Time syk against ripgrep, ugrep, git grep, fd, bfs, find, plocate and grep on queries "
+    "that print the same results."
+)
 METHOD = (
     "Every case runs each tool from the same folder with its output going into a pipe. "
     "Before anything is timed the outputs are compared as sets, and a case whose tools "
@@ -24,8 +27,11 @@ METHOD = (
     "stay in memory, so this measures reading files from disk and not listing them. "
     "syk walks the folders, like the other tools. syk index is syk with an index of "
     "names and of the text in files that was built before the timing, in a temporary "
-    "cache folder. It is left out where no index can be built. --html writes the "
-    "results as a page with charts."
+    "cache folder. It is left out where no index can be built. plocate also searches an "
+    "index built just before the timing, but it does not see changes made after that "
+    "build, which syk index checks for on every search. git grep searches tracked files "
+    "only. A tool that is not installed is left out. --html writes the results as a page "
+    "with charts."
 )
 INDEX = "syk index"
 SECTIONS = (
@@ -56,6 +62,28 @@ BOTH = "pub.*unsafe|unsafe.*pub"
 LIBRARY = r"^lib.*\.so"
 RG = ["rg", "--no-config", "-n", "--no-heading"]
 FD = ["fd", "--no-global-ignore-file"]
+UGREP = ["ugrep", "-rnI", "--no-messages", "--color=never", "--no-heading"]
+UGREP_LIST = ["ugrep", "-rlI", "--no-messages", "--color=never"]
+TRACKED = ["--", ":(exclude,glob).*", ":(exclude,glob)**/.*", ":(exclude,glob)**/.*/**"]
+DATABASE = "DB"
+OTHERS = ("rg", "ugrep", "git", "fd", "bfs", "find", "plocate", "grep")
+UGREP_CASES = {
+    "regex in every file": UGREP + [REGEX, "."],
+    "regex in every file, one thread": UGREP + ["-J1", REGEX, "."],
+    "whole word, plain text": UGREP + ["-F", "-w", "transmute", "."],
+    "regex in .rs files only": UGREP + ["--include=*.rs", TODO, "."],
+    "content in files named *build*": UGREP + ["--include=*build*", CFG, "."],
+    "two words on one line": UGREP + [BOTH, "."],
+    "files that contain a match": UGREP_LIST + ["-F", "async fn", "."],
+    "plain text in every file, hidden and ignored included": UGREP
+    + ["--hidden", "-F", "unsafe impl", "."],
+    "whole word in every file, hidden and ignored included": UGREP
+    + ["--hidden", "-F", "-w", "transmute", "."],
+    "regex in .rs files, hidden and ignored included": UGREP
+    + ["--hidden", "--include=*.rs", TODO, "."],
+    "files that contain a match, hidden and ignored included": UGREP_LIST
+    + ["--hidden", "-F", "async fn", "."],
+}
 
 
 def code_cases():
@@ -208,6 +236,7 @@ def tree_cases():
                 "syk": ["syk", "-U", "-Y", "-u", "all", "-a", "-s", "-n", "libssl"],
                 "fd": FD + ["-u", "-s", "libssl"],
                 "find": ["find", ".", "-name", "*libssl*"],
+                "plocate": ["plocate", "-d", DATABASE, "-b", "libssl"],
             },
         },
         {
@@ -218,6 +247,7 @@ def tree_cases():
                 "syk": ["syk", "-U", "-Y", "-u", "all", "-a", "-s", "-n", LIBRARY],
                 "fd": FD + ["-u", "-s", LIBRARY],
                 "find": ["find", ".", "-name", "lib*.so*"],
+                "plocate": ["plocate", "-d", DATABASE, "-b", "-r", LIBRARY],
             },
         },
         {
@@ -331,7 +361,18 @@ def indexed(cases):
     return cases
 
 
-def small_cases():
+def widened(cases):
+    for case in cases:
+        tools = case["tools"]
+        if case["name"] in UGREP_CASES:
+            tools["ugrep"] = UGREP_CASES[case["name"]]
+        if "find" in tools:
+            tools["bfs"] = ["bfs"] + tools["find"][1:]
+    return cases
+
+
+def small_cases(repository):
+    tracked = {"git grep": ["git", "grep", "-nI", "fn"] + TRACKED} if repository else {}
     return [
         {
             "name": "content in a small project",
@@ -340,6 +381,8 @@ def small_cases():
             "tools": {
                 "syk": ["syk", "-U", "-Y", "-u", "all", "-s", "-c", "fn"],
                 "rg": RG + ["fn"],
+                "ugrep": UGREP + ["--ignore-files", "fn", "."],
+                **tracked,
             },
         },
         {
@@ -365,13 +408,16 @@ def forget(folder):
             os.close(handle)
 
 
-def resolve(argv, syk):
+def resolve(argv, syk, database):
     if argv[0] == "syk":
         return [syk] + argv[1:]
     if argv[0] == "sh":
         return argv
+    if DATABASE in argv and not database:
+        return None
     found = shutil.which(argv[0])
-    return [found] + argv[1:] if found else None
+    words = [database if word == DATABASE else word for word in argv[1:]]
+    return [found] + words if found else None
 
 
 def run(argv, folder):
@@ -389,7 +435,8 @@ def run(argv, folder):
     return time.perf_counter() - started, output, usage.ru_utime + usage.ru_stime
 
 
-def normal(output, kind):
+def normal(output, kind, folder):
+    base = os.fsencode(folder) + b"/"
     rows = set()
     for row in output.split(b"\n"):
         if not row:
@@ -398,13 +445,13 @@ def normal(output, kind):
         if row.startswith(b"./"):
             row = row[2:]
         if kind == "paths":
-            row = row.rstrip(b"/")
+            row = row.removeprefix(base).rstrip(b"/")
         rows.add(row)
     return rows
 
 
-def agreement(outputs, kind):
-    sets = {tool: normal(output, kind) for tool, output in outputs.items()}
+def agreement(outputs, kind, folder):
+    sets = {tool: normal(output, kind, folder) for tool, output in outputs.items()}
     first, *rest = sets.items()
     differing = [tool for tool, rows in rest if rows != first[1]]
     if not differing:
@@ -413,10 +460,10 @@ def agreement(outputs, kind):
     return False, f"DIFFERENT: {sizes}"
 
 
-def measure(case, folder, syk, runs, warmup, cold, lists):
+def measure(case, folder, syk, runs, warmup, cold, lists, database):
     tools = {}
     for tool, argv in case["tools"].items():
-        resolved = resolve(argv, syk)
+        resolved = resolve(argv, syk, database)
         if resolved and (tool != INDEX or lists):
             tools[tool] = resolved
     if len(tools) < 2:
@@ -425,7 +472,7 @@ def measure(case, folder, syk, runs, warmup, cold, lists):
     for _ in range(warmup):
         for tool, argv in tools.items():
             outputs[tool] = run(argv, folder)[1]
-    same, note = agreement(outputs, case["kind"])
+    same, note = agreement(outputs, case["kind"], folder)
     times = {tool: [] for tool in tools}
     work = {tool: [] for tool in tools}
     order = list(tools)
@@ -515,9 +562,10 @@ def page(setup, results):
         place = "the syk sources" if folder == here else short(folder)
         sections.append({"h": title, "s": f"{note} Searched in {place}.", "c": cases})
     syk = f"{setup['syk']} at commit {setup['commit']}" if setup["commit"] else setup["syk"]
+    others = [setup[tool] for tool in OTHERS if setup[tool] != "not installed"]
     shown = [
         ["Measured", setup["date"]],
-        ["Tools", ", ".join([syk] + [setup[tool] for tool in ("rg", "fd", "find", "grep")])],
+        ["Tools", ", ".join([syk] + others)],
         ["Machine", f"{setup['cores']} threads, load average {setup['load']:.1f} at the start"],
         ["Runs", f"{setup['runs']} for every tool in every case"],
     ]
@@ -534,6 +582,19 @@ def version(argv):
         return "not installed"
     lines = done.stdout.splitlines()
     return lines[0] if lines else "unknown"
+
+
+def located(tree, cache):
+    updatedb = shutil.which("updatedb")
+    if not updatedb:
+        return None
+    database = os.path.join(cache, "plocate.db")
+    keep_everything = ["--prunepaths", "", "--prunenames", "", "--prunefs", ""]
+    built = subprocess.run(
+        [updatedb, "-l", "0", "-o", database, "-U", str(tree)] + keep_everything,
+        capture_output=True,
+    )
+    return database if built.returncode == 0 else None
 
 
 def main():
@@ -560,10 +621,7 @@ def main():
 
     setup = {
         "syk": version([syk, "-V"]),
-        "rg": version(["rg", "--version"]),
-        "fd": version(["fd", "--version"]),
-        "find": version(["find", "--version"]),
-        "grep": version(["grep", "--version"]),
+        **{tool: version([tool, "--version"]) for tool in OTHERS},
         "date": time.strftime("%Y-%m-%d"),
         "commit": subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"], cwd=here, capture_output=True, text=True
@@ -581,10 +639,10 @@ def main():
 
     results = []
     groups = (
-        ("contents", args.code, indexed(code_cases()), args.cold),
-        ("names-all", args.tree, tree_cases(), False),
-        ("names", args.tree, indexed(view_cases()), False),
-        ("small", args.small, small_cases(), False),
+        ("contents", args.code, indexed(widened(code_cases())), args.cold),
+        ("names-all", args.tree, widened(tree_cases()), False),
+        ("names", args.tree, indexed(widened(view_cases())), False),
+        ("small", args.small, small_cases((args.small / ".git").exists()), False),
     )
     with tempfile.TemporaryDirectory(prefix="syk-bench-") as cache:
         os.environ["XDG_CACHE_HOME"] = cache
@@ -597,10 +655,14 @@ def main():
         }
         for folder, built in lists.items():
             print(f"index  {'built' if built else 'not built'} for {folder}")
+        database = located(args.tree, cache)
+        print(f"index  {'built' if database else 'not built'} for plocate")
         for section, folder, cases, cold in groups:
             for case in cases:
                 listed = lists.get(folder, False)
-                result = measure(case, folder, syk, args.runs, args.warmup, cold, listed)
+                result = measure(
+                    case, folder, syk, args.runs, args.warmup, cold, listed, database
+                )
                 if result:
                     everything = section == "contents" and "-a" in case["tools"]["syk"]
                     result["section"] = "contents-all" if everything else section

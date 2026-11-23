@@ -10,7 +10,7 @@
 - `syk --setup man` installs the manual page next to the program, for installs through cargo or the install script.
 - `-Q`, `--uncommitted` searches only the files that git reports as changed or new.
 - `-e` takes language names such as `rust`, `typescript` and `web`, which stand for all their extensions.
-- `docs/benchmarks.html` is measured again on this version, next to ripgrep, fd, find and grep.
+- `docs/benchmarks.html` is measured again on this version, and also compares ugrep, git grep, bfs and plocate.
 - A tagged release publishes itself to crates.io and the AUR once the binaries are built.
 
 ## 0.1.2

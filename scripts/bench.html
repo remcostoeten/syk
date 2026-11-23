@@ -18,6 +18,10 @@
   --fd: #eda100;
   --find: #e87ba4;
   --grep: #6250d6;
+  --ugrep: #0f8fa8;
+  --git: #c23b3b;
+  --bfs: #8b6f47;
+  --plocate: #5f7d20;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -33,6 +37,10 @@
     --fd: #c98500;
     --find: #d55181;
     --grep: #9085e9;
+    --ugrep: #2aa7c2;
+    --git: #e06a6a;
+    --bfs: #b0916a;
+    --plocate: #8aa83e;
   }
 }
 body {
@@ -110,6 +118,10 @@ const TOOLS = {
   "fd": ["fd", "fd"],
   "find": ["find", "find"],
   "grep": ["grep", "grep"],
+  "ugrep": ["ugrep", "ugrep"],
+  "git grep": ["git grep", "git"],
+  "bfs": ["bfs", "bfs"],
+  "plocate": ["plocate", "plocate"],
 };
 const SHORT = { "syk index": "syk index", "rg + fd": "rg + fd" };
 const runs = DATA.setup.runs;
@@ -136,7 +148,8 @@ document.getElementById("reading").textContent =
 document.getElementById("method").textContent = DATA.setup.method;
 
 const legend = document.getElementById("legend");
-for (const key of ["syk index", "syk", "rg", "fd", "find", "grep"]) {
+const present = new Set(DATA.sections.flatMap((section) => section.c.flatMap((item) => item.t.map((tool) => tool[0]))));
+for (const key of Object.keys(TOOLS).filter((tool) => tool !== "rg + fd" && present.has(tool))) {
   const item = el("span", "key");
   const swatch = el("span", "swatch");
   swatch.style.background = `var(--${TOOLS[key][1]})`;

@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Write};
@@ -10,13 +11,13 @@ use std::time::{Duration, SystemTime};
 use ignore::WalkBuilder;
 
 use crate::check::{git, outer, probe, trusted};
-use crate::group::Skips;
 use crate::index::{
     BELOW, FOLDER, Folder, GIT, GITIGNORE, HEAD, IGNORE, Index, MAGIC, RACY, RECORD, Record, Stamp,
     Watched, key, now, place, store,
 };
 use crate::item::Form;
 use crate::sign;
+use crate::walk::Bars;
 
 const KEPT: usize = 24;
 const SIGNED: u64 = 1 << 30;
@@ -129,24 +130,40 @@ fn stamp(path: &Path, depth: usize) -> Stamp {
         .unwrap_or_default()
 }
 
-fn bound(builder: &mut WalkBuilder, root: &Path, skips: Skips) {
-    let device = fs::metadata(root).map_or(0, |found| found.dev());
-    let last: Mutex<(PathBuf, bool)> = Mutex::new((PathBuf::new(), true));
+struct Reach {
+    parent: PathBuf,
+    open: bool,
+    devices: HashMap<u64, bool>,
+}
+
+fn bound(builder: &mut WalkBuilder, root: &Path, bars: Bars) {
+    let first = fs::metadata(root).map_or(0, |found| found.dev());
+    let reach = Mutex::new(Reach {
+        parent: PathBuf::new(),
+        open: true,
+        devices: HashMap::from([(first, true)]),
+    });
     builder.filter_entry(move |entry| {
         if entry.depth() == 0 {
             return true;
         }
-        if skips.matches(entry.file_name().as_bytes()) {
+        if bars.bar(entry) {
             return false;
         }
-        let (Some(parent), Ok(mut last)) = (entry.path().parent(), last.lock()) else {
+        let (Some(parent), Ok(mut reach)) = (entry.path().parent(), reach.lock()) else {
             return true;
         };
-        if entry.depth() > 1 && last.0 != parent {
-            let same = fs::symlink_metadata(parent).is_ok_and(|found| found.dev() == device);
-            *last = (parent.to_path_buf(), same);
+        if entry.depth() > 1 && reach.parent != parent {
+            let device = fs::symlink_metadata(parent).map(|found| found.dev());
+            reach.open = device.is_ok_and(|device| {
+                *reach
+                    .devices
+                    .entry(device)
+                    .or_insert_with(|| trusted(parent))
+            });
+            reach.parent = parent.to_path_buf();
         }
-        entry.depth() == 1 || last.1
+        entry.depth() == 1 || reach.open
     });
 }
 
@@ -160,7 +177,7 @@ fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, 
     };
     let prefix = root.as_os_str().as_bytes().len();
     let mut open: Vec<u32> = Vec::new();
-    let mut device = None;
+    let mut devices: HashMap<u64, bool> = HashMap::new();
     builder.sort_by_file_name(|left, right| left.cmp(right));
     for found in builder.build() {
         let entry = match found {
@@ -193,10 +210,12 @@ fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, 
             record.tag = Record::tag(form, slot);
             let path = entry.path();
             let stamp = stamp(path, depth);
-            let crossed = *device.get_or_insert(stamp.device) != stamp.device;
+            let stored = *devices
+                .entry(stamp.device)
+                .or_insert_with(|| depth == 0 || trusted(path));
             let found = draft.folder(at, path, stamp, started);
-            match (crossed, draft.folders.last_mut()) {
-                (true, Some(folder)) => folder.flags |= RACY,
+            match (stored, draft.folders.last_mut()) {
+                (false, Some(folder)) => folder.flags |= RACY,
                 _ => draft.watch(path, prefix, found),
             }
             open.push(at);
@@ -301,10 +320,10 @@ pub fn build(
     root: &Path,
     print: &str,
     mut builder: WalkBuilder,
-    skips: Skips,
+    bars: Bars,
     threads: usize,
 ) -> Result<Built, String> {
-    bound(&mut builder, root, skips);
+    bound(&mut builder, root, bars);
     let real = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
     let store = store().ok_or("there is no cache folder, because HOME is not set")?;
     fs::DirBuilder::new()

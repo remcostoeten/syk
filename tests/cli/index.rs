@@ -83,7 +83,7 @@ fn an_index_finds_what_a_walk_finds_while_the_tree_changes() {
     same(&["-n", "file"]);
     assert!(
         fixture
-            .errors(&["-y", "-H"])
+            .errors(&["-y", "-L"])
             .contains("-y does not go with")
     );
 }
@@ -318,4 +318,34 @@ fn an_index_repeats_the_errors_below_a_folder_inside_it() {
         assert_eq!(denied(&indexed), denied(&walked));
         assert!(indexed.starts_with("syk: src/locked: "), "{indexed}");
     }
+}
+
+#[test]
+fn a_search_with_hidden_entries_has_an_index_of_its_own() {
+    let fixture = Fixture::new();
+    std::thread::sleep(Duration::from_millis(2100));
+    assert_eq!(fixture.run(&["-y"]).1, 0);
+    let stats = |args: &[&str]| {
+        let output = fixture
+            .command(&[args, &["-T", "-p"]].concat())
+            .output()
+            .expect("run syk");
+        (
+            String::from_utf8_lossy(&output.stdout).into_owned(),
+            String::from_utf8_lossy(&output.stderr).into_owned(),
+        )
+    };
+    assert!(!stats(&["-H", "-n", "secret"]).1.contains("from the index"));
+
+    assert_eq!(fixture.run(&["-y", "-H"]).1, 0);
+    let (found, said) = stats(&["-H", "-n", "secret"]);
+    assert!(said.contains("from the index"), "{said}");
+    assert_eq!(found, ".hidden/secret.txt\n");
+    assert!(stats(&["-n", "secret"]).0.is_empty());
+    assert!(stats(&["-a", "-n", "skip"]).1.contains("Read 0 files"));
+    assert!(!stats(&["-a", "-n", "skip"]).1.contains("from the index"));
+
+    let listed = fixture.run(&["-A"]).0;
+    assert!(listed.contains(" with -H\n"), "{listed}");
+    assert!(listed.contains("2 indexes"), "{listed}");
 }

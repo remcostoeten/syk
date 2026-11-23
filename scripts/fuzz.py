@@ -11,7 +11,8 @@ from pathlib import Path
 
 ABOUT = "Change random trees and check that syk finds the same with an index as without one."
 METHOD = (
-    "Every tree gets an index from syk -y. A round then makes a few random changes: files "
+    "Every tree gets an index from syk -y for each kind of search: plain, -H, -I, -H -I "
+    "and -a. A round then makes a few random changes: files "
     "and folders are made, removed, renamed and swapped, ignore files are written and "
     "removed, and folders lose and regain their permissions. Files also get other text, "
     "sometimes of the same length and with the old modification time put back, and some "
@@ -108,7 +109,16 @@ QUERIES = [
     ["-c", "last needle", "-u", "lock"],
     ["needle", "here"],
     ["-n", "lock", "-c", "needle"],
+    ["-H", "-n"],
+    ["-H", "-c", "needle", "-l"],
+    ["-H", "-n", "hidden"],
+    ["-I", "-n", "a"],
+    ["-I", "-c", "needle", "-l"],
+    ["-H", "-I", "-d"],
+    ["-a", "-n"],
+    ["-a", "-c", "needle", "-N"],
 ]
+VIEWS = [[], ["-H"], ["-I"], ["-H", "-I"], ["-a"]]
 SETTLE = 2.1
 
 def search(syk, env, root, query):
@@ -243,6 +253,12 @@ def compare(syk, env, root, label, used):
     return True
 
 
+def build(syk, env, root, view):
+    return subprocess.run(
+        [syk, "-y", *view], cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True
+    )
+
+
 def trial(syk, env, root, rounds, used):
     root.mkdir(parents=True)
     if random.random() < 0.5:
@@ -251,11 +267,11 @@ def trial(syk, env, root, rounds, used):
         change(root)
     if random.random() < 0.7:
         time.sleep(SETTLE)
-    build = [syk, "-y"]
-    built = subprocess.run(build, cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True)
-    if built.returncode != 0:
-        print(f"no index for {root}: {built.stderr.decode().strip()}")
-        return False
+    for view in VIEWS:
+        built = build(syk, env, root, view)
+        if built.returncode != 0:
+            print(f"no index for {root}: {built.stderr.decode().strip()}")
+            return False
     if not compare(syk, env, root, "a new tree", used):
         return False
     for round in range(3):
@@ -267,7 +283,8 @@ def trial(syk, env, root, rounds, used):
         if not compare(syk, env, root, f"round {round} after {', '.join(kinds)}", used):
             return False
         if random.random() < 0.15:
-            subprocess.run(build, cwd=root, env=env, stdin=subprocess.DEVNULL, capture_output=True)
+            for view in random.sample(VIEWS, 2):
+                build(syk, env, root, view)
             if not compare(syk, env, root, f"round {round} with a new index", used):
                 return False
     return True

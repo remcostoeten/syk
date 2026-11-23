@@ -1,4 +1,6 @@
 use std::fmt::Write;
+use std::fs;
+use std::path::PathBuf;
 
 use crate::group::Skip;
 use crate::pattern::{Pattern, Reading, Term};
@@ -161,10 +163,13 @@ fn skips(out: &mut String, query: &Query) {
     let walk = &query.walk;
     let hidden = walk.hidden || walk.all;
     let ignored = walk.no_ignore || walk.all;
+    let whole = |root: &PathBuf| fs::canonicalize(root).is_ok_and(|real| real.parent().is_none());
+    let top = query.roots.iter().any(whole);
     let skipped: Vec<&str> = [
         (!hidden, "hidden entries"),
         (!ignored, "ignored entries"),
         (hidden && !walk.all, "the inside of .git"),
+        (!ignored && top, "/proc and /sys"),
         (true, "binary file contents"),
     ]
     .into_iter()

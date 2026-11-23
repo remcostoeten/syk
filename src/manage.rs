@@ -31,6 +31,7 @@ impl Action {
 struct Held {
     file: PathBuf,
     root: Option<PathBuf>,
+    view: &'static str,
     entries: u64,
     built: i64,
     size: u64,
@@ -46,6 +47,7 @@ impl Held {
         let index = Index::load(&file);
         Held {
             root: index.as_ref().map(|index| index.root().to_path_buf()),
+            view: index.as_ref().map_or("", Index::view),
             entries: index.as_ref().map_or(0, |index| u64::from(index.entries())),
             built: index.as_ref().map_or(0, Index::built),
             size,
@@ -58,9 +60,13 @@ impl Held {
     }
 
     fn label(&self) -> String {
+        let view = match self.view {
+            "" => String::new(),
+            view => format!(" with {view}"),
+        };
         match &self.root {
-            Some(root) if root.is_dir() => root.display().to_string(),
-            Some(root) => format!("{} (folder is gone)", root.display()),
+            Some(root) if root.is_dir() => format!("{}{view}", root.display()),
+            Some(root) => format!("{}{view} (folder is gone)", root.display()),
             None => format!("{} (unreadable)", self.file.display()),
         }
     }

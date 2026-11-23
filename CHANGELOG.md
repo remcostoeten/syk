@@ -6,7 +6,10 @@
 - The index also holds a signature of the text of every file. A search of contents does not read the files that cannot hold its pattern, after checking that they did not change since the index was built. `-T` says how many files that were.
 - On Linux, syk lists folders with a walker of its own and applies the ignore rules with the same matchers as before. `-L` and `-o` still use the walker of the `ignore` crate.
 - `-y` builds an index right away, `-Y` searches without one, and `-T` says whether the names came from an index.
-- A search in a folder below an indexed folder uses that index, and a mounted disk inside the tree is read live instead of stopping the build.
+- A search in a folder below an indexed folder uses that index, so one index of the home folder serves every folder below it.
+- A search with `-H` gets an index of its own, built in the background like the plain one. `syk -y -I` and `syk -y -a` build one for those searches.
+- A disk mounted inside an indexed folder no longer stops the build. A local Linux file system becomes part of the index, and any other mount is read on every search.
+- A search of `/` skips `/proc` and `/sys`, unless `-I` or `-a` is given or one of them is named as the path.
 - `-A` lists the stored indexes with their size, age and folder. `-A clear` removes all of them or those of the given folders, and `-A prune` removes those whose folder is gone.
 - The exit status is 2 when a file or folder could not be read, also when other results were found.
 - `-J` adds `path_hex` to a path that is not valid UTF-8, so the exact file can still be found.

@@ -1,15 +1,65 @@
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use ignore::WalkBuilder;
 use ignore::overrides::{Override, OverrideBuilder};
+use ignore::{DirEntry, WalkBuilder};
 
+use crate::check::synthetic;
 use crate::group::{Skip, Skips};
 use crate::query::Query;
 
 const WORKERS: usize = 12;
+const KERNEL: [&str; 2] = ["proc", "sys"];
+
+pub fn kernel(real: &Path) -> Vec<&'static str> {
+    let top = Path::new("/");
+    match real == top {
+        true => KERNEL
+            .into_iter()
+            .filter(|name| synthetic(&top.join(name)))
+            .collect(),
+        false => Vec::new(),
+    }
+}
+
+pub struct Bars {
+    git: bool,
+    skips: Skips,
+    kernel: Vec<PathBuf>,
+}
+
+impl Bars {
+    pub fn new(query: &Query) -> Bars {
+        let hidden = query.walk.hidden || query.walk.all;
+        let ignored = query.walk.no_ignore || query.walk.all;
+        let made = |root: &PathBuf| -> Vec<PathBuf> {
+            let real = fs::canonicalize(root).unwrap_or_default();
+            let names = kernel(&real).into_iter();
+            names.map(|name| root.join(name)).collect()
+        };
+        Bars {
+            git: hidden && !query.walk.all,
+            skips: skips(query, Skip::Whole),
+            kernel: match ignored {
+                true => Vec::new(),
+                false => query.roots.iter().flat_map(made).collect(),
+            },
+        }
+    }
+
+    fn any(&self) -> bool {
+        self.git || self.skips.by_name() || !self.kernel.is_empty()
+    }
+
+    pub fn bar(&self, entry: &DirEntry) -> bool {
+        let name = entry.file_name().as_bytes();
+        let named = (self.git && name == b".git") || self.skips.matches(name);
+        let made = entry.depth() == 1 && self.kernel.iter().any(|path| path == entry.path());
+        entry.depth() > 0 && (named || made)
+    }
+}
 
 pub fn excludes(query: &Query) -> Result<Override, String> {
     let root = std::env::current_dir().unwrap_or_else(|_| ".".into());
@@ -58,13 +108,9 @@ pub fn walker(query: &Query) -> WalkBuilder {
         .follow_links(query.walk.follow)
         .max_depth(query.walk.depth)
         .threads(threads(query));
-    let git = hidden && !query.walk.all;
-    let skips = skips(query, Skip::Whole);
-    if git || skips.by_name() {
-        builder.filter_entry(move |entry| {
-            let name = entry.file_name().as_bytes();
-            entry.depth() == 0 || !(git && name == b".git" || skips.matches(name))
-        });
+    let bars = Bars::new(query);
+    if bars.any() {
+        builder.filter_entry(move |entry| !bars.bar(entry));
     }
     if let Ok(excluded) = excludes(query)
         && !excluded.is_empty()

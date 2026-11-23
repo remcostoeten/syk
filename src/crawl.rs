@@ -270,6 +270,9 @@ impl<'a, S: Sink> Crew<'a, S> {
                 }
             };
             let folded = form == Form::Dir;
+            if folded && folder.depth == 0 && base.made(name) {
+                continue;
+            }
             if pool
                 .rules
                 .skip(base, layer.as_deref(), &self.path, name, folded)

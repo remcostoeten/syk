@@ -11,7 +11,7 @@ use ignore::overrides::Override;
 
 use crate::group::{Skip, Skips};
 use crate::query::Query;
-use crate::walk::{excludes, excludes_file, skips};
+use crate::walk::{excludes, excludes_file, kernel, skips};
 
 #[derive(Default)]
 pub struct Seen {
@@ -137,6 +137,7 @@ pub struct Base {
     real: PathBuf,
     above: Vec<Layer>,
     rules: bool,
+    kernel: Vec<&'static str>,
     pub any_git: bool,
     pub failure: Option<String>,
 }
@@ -148,6 +149,7 @@ impl Base {
             real: PathBuf::new(),
             above: Vec::new(),
             rules: false,
+            kernel: Vec::new(),
             any_git: false,
             failure: None,
         };
@@ -164,8 +166,13 @@ impl Base {
         base.rules = base.above.iter().any(|layer| layer.loud);
         base.any_git = base.above.iter().any(|layer| layer.git);
         base.failure = (!errors.is_empty()).then(|| errors.join("\n"));
+        base.kernel = kernel(&real);
         base.real = real;
         base
+    }
+
+    pub fn made(&self, name: &[u8]) -> bool {
+        self.kernel.iter().any(|made| made.as_bytes() == name)
     }
 
     fn inner<'a>(&self, shown: &'a Path) -> &'a Path {

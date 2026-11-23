@@ -332,6 +332,17 @@ impl Index {
         Path::new(OsStr::from_bytes(&self.map[self.root.clone()]))
     }
 
+    pub fn view(&self) -> &'static str {
+        let print = &self.map[self.print.clone()];
+        match print.split(|byte| *byte == b'\n').next() {
+            Some(b"1H") => "-H",
+            Some(b"1I") => "-I",
+            Some(b"1HI") => "-H -I",
+            Some(b"1A") => "-a",
+            _ => "",
+        }
+    }
+
     pub fn built(&self) -> i64 {
         self.built
     }

@@ -18,7 +18,7 @@ use crate::need::Need;
 use crate::query::Query;
 use crate::report::counted;
 use crate::scan::{self, Scan};
-use crate::walk::{excludes, skips, threads, walker};
+use crate::walk::{Bars, excludes, threads, walker};
 use crate::worker::{AHEAD, Shared, Worker};
 
 const PIECE: Range<u32> = 64..4096;
@@ -37,12 +37,13 @@ pub struct Stored {
 }
 
 fn print(query: &Query) -> String {
+    let view = view(query);
+    let mut print = format!("1{}", view.replace(['-', ' '], "").to_uppercase());
     let whole = query
         .filters
         .groups
         .iter()
-        .filter(|group| group.skip == Skip::Whole);
-    let mut print = String::from("1");
+        .filter(|group| group.skip == Skip::Whole && !view.contains(['I', 'a']));
     for pattern in whole.flat_map(|group| &group.patterns) {
         print.push('\n');
         print.push_str(pattern);
@@ -50,10 +51,23 @@ fn print(query: &Query) -> String {
     print
 }
 
-fn indexable(query: &Query) -> bool {
+fn view(query: &Query) -> &'static str {
     let walk = &query.walk;
-    !(walk.no_index || walk.hidden || walk.no_ignore || walk.all || walk.follow)
-        && query.roots.len() == 1
+    match (walk.all, walk.hidden, walk.no_ignore) {
+        (true, _, _) => "-a",
+        (false, true, true) => "-H -I",
+        (false, true, false) => "-H",
+        (false, false, true) => "-I",
+        (false, false, false) => "",
+    }
+}
+
+fn indexable(query: &Query) -> bool {
+    !(query.walk.no_index || query.walk.follow) && query.roots.len() == 1
+}
+
+fn unasked(query: &Query) -> bool {
+    !query.walk.no_ignore && !query.walk.all
 }
 
 pub fn stored(query: &Query, sorted: bool) -> (Option<Stored>, Advice) {
@@ -64,7 +78,8 @@ pub fn stored(query: &Query, sorted: bool) -> (Option<Stored>, Advice) {
     let index = match Index::open(root, &print(query)) {
         Opened::Ready(index) => *index,
         Opened::Stale => return (None, Advice::Build),
-        Opened::Missing => return (None, Advice::Large),
+        Opened::Missing if unasked(query) => return (None, Advice::Large),
+        Opened::Missing => return (None, Advice::Leave),
     };
     let bytes = root.as_os_str().as_bytes();
     let dirty = index.stale(bytes, threads(query));
@@ -100,7 +115,7 @@ fn refresh(shared: &Shared, query: &Query, fresh: Fresh) -> Vec<u32> {
     let fresh = Arc::new(fresh);
     let added: Arc<Mutex<HashSet<Vec<u8>>>> = Arc::default();
     let seen: Mutex<HashSet<u32>> = Mutex::default();
-    let skips = skips(query, Skip::Whole);
+    let bars = Bars::new(query);
     let mut builder = walker(query);
     builder.filter_entry({
         let (fresh, added) = (fresh.clone(), added.clone());
@@ -108,7 +123,7 @@ fn refresh(shared: &Shared, query: &Query, fresh: Fresh) -> Vec<u32> {
             if entry.depth() == 0 {
                 return true;
             }
-            if skips.matches(entry.file_name().as_bytes()) {
+            if bars.bar(entry) {
                 return false;
             }
             let path = entry.path().as_os_str().as_bytes();
@@ -225,7 +240,7 @@ pub fn reindex(mut query: Query, started: Instant) -> ExitCode {
     let plain = indexable(query) && query.filters.excludes.is_empty() && query.walk.depth.is_none();
     if !plain {
         eprintln!(
-            "syk: an index holds what a plain search of one folder sees, so -y does not go with -H, -I, -a, -L, -E, -D, -Y or several paths."
+            "syk: an index holds everything one search of one folder sees, so -y does not go with -L, -E, -D, -Y or several paths."
         );
         return ExitCode::from(2);
     }
@@ -238,7 +253,7 @@ pub fn reindex(mut query: Query, started: Instant) -> ExitCode {
         root,
         &print(query),
         walker(query),
-        skips(query, Skip::Whole),
+        Bars::new(query),
         threads(query),
     ) {
         Ok(built) => {
@@ -269,6 +284,8 @@ pub fn background(query: &Query) {
         return;
     }
     let mut flags = vec!["-U".to_string(), "-u".to_string(), group::EVERY.to_string()];
+    flags.extend(view(query).split(' ').map(str::to_string));
+    flags.retain(|flag| !flag.is_empty());
     let whole = query
         .filters
         .groups

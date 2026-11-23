@@ -132,6 +132,18 @@ pub fn outer(root: &Path) -> Vec<Watched> {
 }
 
 #[cfg(target_os = "linux")]
+fn system(path: &Path) -> Option<i64> {
+    let text = std::ffi::CString::new(path.as_os_str().as_bytes()).ok()?;
+    let mut found: libc::statfs = unsafe { std::mem::zeroed() };
+    let status = unsafe { libc::statfs(text.as_ptr(), &mut found) };
+    (status == 0).then_some(found.f_type as i64 & 0xFFFF_FFFF)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn system(_: &Path) -> Option<i64> {
+    None
+}
+
 pub fn trusted(path: &Path) -> bool {
     // ext, btrfs, xfs, tmpfs, f2fs, zfs and bcachefs update a folder's times on every change
     const LOCAL: [i64; 7] = [
@@ -143,17 +155,13 @@ pub fn trusted(path: &Path) -> bool {
         0x2FC1_2FC1,
         0xCA45_1A4E,
     ];
-    let Ok(text) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
-        return false;
-    };
-    let mut found: libc::statfs = unsafe { std::mem::zeroed() };
-    let status = unsafe { libc::statfs(text.as_ptr(), &mut found) };
-    status == 0 && LOCAL.contains(&(found.f_type as i64 & 0xFFFF_FFFF))
+    system(path).is_some_and(|kind| LOCAL.contains(&kind))
 }
 
-#[cfg(not(target_os = "linux"))]
-pub fn trusted(_: &Path) -> bool {
-    false
+pub fn synthetic(path: &Path) -> bool {
+    // proc and sysfs hold no files, only views of the kernel that have no end
+    const MADE: [i64; 2] = [0x9FA0, 0x6265_6572];
+    system(path).is_some_and(|kind| MADE.contains(&kind))
 }
 
 pub enum Opened {

@@ -1,8 +1,9 @@
 use std::collections::HashSet;
 use std::fs;
+use std::io::{self, IsTerminal};
 use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,7 +14,7 @@ use ignore::WalkState;
 use crate::build;
 use crate::check::{Fresh, Opened};
 use crate::group::{self, Skip};
-use crate::index::Index;
+use crate::index::{Index, home, place};
 use crate::need::Need;
 use crate::query::Query;
 use crate::report::counted;
@@ -22,6 +23,7 @@ use crate::walk::{Bars, excludes, threads, walker};
 use crate::worker::{AHEAD, Shared, Worker};
 
 const PIECE: Range<u32> = 64..4096;
+const BIG: u64 = 20_000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Advice {
@@ -281,13 +283,48 @@ pub fn reindex(mut query: Query, started: Instant) -> ExitCode {
     }
 }
 
-pub fn background(query: &Query) {
-    let print = print(query);
-    let Ok(root) = fs::canonicalize(&query.roots[0]) else {
+fn homeward(query: &Query, real: &Path, print: &str) -> Option<PathBuf> {
+    let home = fs::canonicalize(home()?).ok()?;
+    let fits = view(query).is_empty()
+        && io::stderr().is_terminal()
+        && home.parent().is_some()
+        && real.starts_with(&home);
+    let absent = place(&home, print, "idx").is_some_and(|index| !index.exists());
+    (fits && absent && build::wanted(&home, print) && !build::unplugged()).then_some(home)
+}
+
+fn tell(home: &Path) {
+    let Ok(told) = build::ready().map(|store| store.join("told")) else {
         return;
     };
-    let root = Index::cover(&root, &print).unwrap_or(root);
-    if !build::wanted(&root, &print) {
+    if !told.exists() && fs::write(&told, "").is_ok() {
+        eprintln!(
+            "syk: building an index of {} in the background, so that later searches are faster. syk -A lists the indexes, and -Y in the config file switches them off.",
+            home.display()
+        );
+    }
+}
+
+pub fn background(query: &Query, advice: Advice, worn: bool, entries: u64) {
+    if !indexable(query) {
+        return;
+    }
+    let print = print(query);
+    let Ok(real) = fs::canonicalize(&query.roots[0]) else {
+        return;
+    };
+    let renew = advice == Advice::Build || worn;
+    let home = match (renew, advice) {
+        (false, Advice::Large) => homeward(query, &real, &print),
+        _ => None,
+    };
+    let root = match (renew, advice, &home) {
+        (true, _, _) => Index::cover(&real, &print).unwrap_or(real),
+        (false, Advice::Large, Some(home)) => home.clone(),
+        (false, Advice::Large, None) if entries >= BIG => real,
+        _ => return,
+    };
+    if !build::wanted(&root, &print) || build::busy() || build::cramped() {
         return;
     }
     let mut flags = vec!["-U".to_string(), "-u".to_string(), group::EVERY.to_string()];
@@ -304,5 +341,9 @@ pub fn background(query: &Query) {
     }
     let mut folder = root.into_os_string();
     folder.push("/");
-    let _ = build::spawn(Path::new(&folder), &flags);
+    if build::spawn(Path::new(&folder), &flags).is_ok()
+        && let Some(home) = home
+    {
+        tell(&home);
+    }
 }

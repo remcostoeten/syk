@@ -1,7 +1,7 @@
 use std::fs;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use crate::Fixture;
+use crate::{Fixture, Terminal};
 
 #[cfg(target_os = "linux")]
 #[test]
@@ -212,7 +212,7 @@ fn stored_indexes_can_be_listed_and_removed() {
             })
             .unwrap_or(0)
     };
-    assert!(fixture.run(&["-A"]).0.starts_with("No indexes in"));
+    assert!(fixture.run(&["-A"]).0.contains("No indexes in"));
 
     assert_eq!(fixture.run(&["-y", "src/"]).1, 0);
     assert_eq!(fixture.run(&["-y", "needle/"]).1, 0);
@@ -370,4 +370,37 @@ fn a_search_with_hidden_entries_has_an_index_of_its_own() {
     let listed = fixture.run(&["-A"]).0;
     assert!(listed.contains(" with -H\n"), "{listed}");
     assert!(listed.contains("2 indexes"), "{listed}");
+}
+
+#[test]
+fn the_first_search_from_a_terminal_indexes_the_home_folder() {
+    let mut fixture = Fixture::new();
+    fixture.home = true;
+    let listed = |fixture: &Fixture| fixture.run(&["-A"]).0;
+    assert_eq!(fixture.run(&["-n", "route", "src/"]).1, 0);
+    assert!(listed(&fixture).contains("No indexes in"));
+    if listed(&fixture).contains("builds no index by itself") {
+        return;
+    }
+
+    let mut terminal = Terminal::open(&fixture, &["-n", "route", "src/"], true);
+    terminal.wait_for("building an index of");
+    terminal.wait_for("-Y in the config file switches them off.");
+    assert_eq!(terminal.finish("").1, 0);
+    let started = Instant::now();
+    while !listed(&fixture).contains("1 index,") {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "no index was built"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let home = fs::canonicalize(&fixture.root).expect("a real path");
+    assert!(listed(&fixture).contains(&format!("{}\n", home.display())));
+
+    assert_eq!(fixture.run(&["-A", "clear"]).1, 0);
+    let again = Terminal::open(&fixture, &["-n", "route", "src/"], true);
+    let (_, status) = again.finish("");
+    assert_eq!(status, 0);
+    assert!(fixture.data().join("syk/index/told").exists());
 }

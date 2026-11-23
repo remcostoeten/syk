@@ -2,7 +2,10 @@
 
 ## Unreleased
 
-- After a search that walks more than 20,000 entries, syk builds an index of the names in the background and keeps it in `~/.cache/syk`. Later searches below that folder check every folder in the index for changes and read only the ones that changed, so they find the same as a search without an index. Linux only.
+- The first search from a terminal below the home folder builds an index of the whole home folder in the background, and says so once. Outside it, a search that walks more than 20,000 entries builds one of the folder it searched. The indexes are kept in `~/.cache/syk`.
+- Background builds run one at a time at the lowest CPU and disk priority, and none starts while less than 2 GB is free.
+- An index of a folder replaces the indexes of the folders inside it, and the 24 indexes used last are kept.
+- An index holds the names below a folder. Later searches below that folder check every folder in the index for changes and read only the ones that changed, so they find the same as a search without an index. Linux only.
 - The index also holds a signature of the text of every file. A search of contents does not read the files that cannot hold its pattern, after checking that they did not change since the index was built. `-T` says how many files that were.
 - On Linux, syk lists folders with a walker of its own and applies the ignore rules with the same matchers as before. `-L` and `-o` still use the walker of the `ignore` crate.
 - `-y` builds an index right away, `-Y` searches without one, and `-T` says whether the names came from an index.

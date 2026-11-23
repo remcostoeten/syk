@@ -27,6 +27,7 @@ static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 struct Fixture {
     root: PathBuf,
+    home: bool,
 }
 
 impl Fixture {
@@ -36,7 +37,7 @@ impl Fixture {
             std::process::id(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        let fixture = Fixture { root };
+        let fixture = Fixture { root, home: false };
         fixture.dir(".git");
         fixture.file(".gitignore", "ignored/\n");
         fixture.file(".hidden/secret.txt", "needle hidden\n");
@@ -69,6 +70,7 @@ impl Fixture {
     }
 
     fn command(&self, args: &[&str]) -> Command {
+        let home = self.data();
         let mut command = Command::new(env!("CARGO_BIN_EXE_syk"));
         command
             .args(args)
@@ -77,6 +79,7 @@ impl Fixture {
             .env("XDG_DATA_HOME", self.data())
             .env("XDG_CONFIG_HOME", self.data())
             .env("XDG_CACHE_HOME", self.data())
+            .env("HOME", if self.home { &self.root } else { &home })
             .env("_ZO_DATA_DIR", self.data())
             .env_remove("SYK_CONFIG")
             .env_remove("VISUAL")

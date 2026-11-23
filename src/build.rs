@@ -20,6 +20,7 @@ use crate::sign::{self, Signs};
 use crate::walk::Bars;
 
 const KEPT: usize = 24;
+const SPARE: u64 = 2 << 30;
 const SIGNED: u64 = 1 << 30;
 const LOCKED: Duration = Duration::from_secs(600);
 const REFUSED: Duration = Duration::from_secs(24 * 60 * 60);
@@ -301,7 +302,11 @@ pub fn prune(store: &Path) {
     let mut kept: Vec<(SystemTime, PathBuf)> = paths
         .into_iter()
         .filter(|path| kind(path, "idx"))
-        .filter_map(|path| Some((fs::metadata(&path).ok()?.modified().ok()?, path)))
+        .filter_map(|path| {
+            let found = fs::metadata(&path).ok()?;
+            let used = found.accessed().unwrap_or(SystemTime::UNIX_EPOCH);
+            Some((found.modified().ok()?.max(used), path))
+        })
         .collect();
     kept.sort();
     let mut held = 0;
@@ -317,6 +322,38 @@ pub fn prune(store: &Path) {
     }
 }
 
+pub fn ready() -> Result<PathBuf, String> {
+    let store = store().ok_or("there is no cache folder, because HOME is not set")?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&store)
+        .map_err(|error| format!("{}: {error}", store.display()))?;
+    Ok(store)
+}
+
+fn absorb(store: &Path, placed: &Path) {
+    let (Some(index), Ok(listing)) = (Index::load(placed), fs::read_dir(store)) else {
+        return;
+    };
+    let print = &index.map[index.print.clone()];
+    for path in listing.flatten().map(|entry| entry.path()) {
+        let inner = match path.extension().is_some_and(|kind| kind == "idx") && path != placed {
+            true => Index::load(&path),
+            false => None,
+        };
+        let covered = inner.is_some_and(|inner| {
+            let rest = inner.root().strip_prefix(index.root());
+            &inner.map[inner.print.clone()] == print && rest.is_ok_and(|rest| index.holds(rest))
+        });
+        if covered {
+            for kind in ["idx", "sig", "no"] {
+                let _ = fs::remove_file(path.with_extension(kind));
+            }
+        }
+    }
+}
+
 pub fn build(
     root: &Path,
     print: &str,
@@ -326,12 +363,7 @@ pub fn build(
 ) -> Result<Built, String> {
     bound(&mut builder, root, bars);
     let real = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
-    let store = store().ok_or("there is no cache folder, because HOME is not set")?;
-    fs::DirBuilder::new()
-        .recursive(true)
-        .mode(0o700)
-        .create(&store)
-        .map_err(|error| format!("{}: {error}", store.display()))?;
+    let store = ready()?;
     if !trusted(&real) {
         return Err(refuse(
             &real,
@@ -389,6 +421,7 @@ pub fn build(
     match made {
         Ok(built) => {
             let _ = fs::remove_file(store.join(format!("{name}.no")));
+            absorb(&store, &placed);
             prune(&store);
             Ok(built)
         }
@@ -404,6 +437,43 @@ pub fn wanted(root: &Path, print: &str) -> bool {
     let refused = place(&real, print, "no").is_some_and(|marker| younger(&marker, REFUSED));
     let rested = !place(&real, print, "idx").is_some_and(|index| younger(&index, RESTED));
     !busy && !refused && rested && trusted(&real)
+}
+
+pub fn busy() -> bool {
+    let Some(listing) = store().and_then(|store| fs::read_dir(store).ok()) else {
+        return false;
+    };
+    listing.flatten().any(|entry| {
+        let path = entry.path();
+        path.extension().is_some_and(|kind| kind == "lock") && younger(&path, LOCKED)
+    })
+}
+
+pub fn unplugged() -> bool {
+    let Ok(listing) = fs::read_dir("/sys/class/power_supply") else {
+        return false;
+    };
+    listing.flatten().any(|supply| {
+        let read = |name: &str| fs::read_to_string(supply.path().join(name)).unwrap_or_default();
+        let own = read("type").trim() == "Battery" && read("scope").trim() != "Device";
+        own && read("status").trim() == "Discharging"
+    })
+}
+
+pub fn cramped() -> bool {
+    let Some(store) = store() else {
+        return false;
+    };
+    let Some(text) = store
+        .ancestors()
+        .find(|folder| folder.exists())
+        .and_then(|folder| std::ffi::CString::new(folder.as_os_str().as_bytes()).ok())
+    else {
+        return false;
+    };
+    let mut found: libc::statvfs = unsafe { std::mem::zeroed() };
+    let status = unsafe { libc::statvfs(text.as_ptr(), &mut found) };
+    status == 0 && (found.f_bavail as u64).saturating_mul(found.f_frsize as u64) < SPARE
 }
 
 pub fn spawn(root: &Path, flags: &[String]) -> io::Result<()> {
@@ -423,6 +493,8 @@ pub fn spawn(root: &Path, flags: &[String]) -> io::Result<()> {
     unsafe {
         command.pre_exec(|| {
             libc::setpriority(libc::PRIO_PROCESS, 0, 19);
+            #[cfg(target_os = "linux")]
+            libc::syscall(libc::SYS_ioprio_set, 1, 0, 3 << 13);
             Ok(())
         });
     }

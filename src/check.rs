@@ -188,7 +188,7 @@ impl Index {
         let same = &index.map[index.root.clone()] == real.as_os_str().as_bytes()
             && &index.map[index.print.clone()] == print.as_bytes();
         match same && trusted(&real) && index.settled(&real, root, &[]) {
-            true => Opened::Ready(Box::new(index)),
+            true => Opened::Ready(Box::new(index.used())),
             false => Opened::Stale,
         }
     }
@@ -210,6 +210,10 @@ impl Index {
             }
         }
         Opened::Missing
+    }
+
+    pub fn holds(&self, rest: &Path) -> bool {
+        self.trail(rest).is_some()
     }
 
     fn trail(&self, rest: &Path) -> Option<Vec<u32>> {
@@ -272,7 +276,7 @@ impl Index {
         self.within = slot..low;
         self.floor = record.depth;
         self.inner = path.into_os_string().into_encoded_bytes();
-        Opened::Ready(Box::new(self))
+        Opened::Ready(Box::new(self.used()))
     }
 
     pub fn cover(real: &Path, print: &str) -> Option<PathBuf> {

@@ -9,14 +9,13 @@ use crate::pick;
 use crate::plan::{Compiled, compile};
 use crate::query::{Matching, Plan, Query, Targets};
 use crate::rank::{Block, Habits, Score};
-use crate::replay::{Advice, background, reindex};
+use crate::replay::{background, reindex};
 use crate::report::{hints, totals};
 use crate::search::{Outcome, Pass, View, search, view};
 use crate::spell;
 use crate::stop;
 use crate::walk::excludes;
 
-const BIG: u64 = 20_000;
 #[cfg(target_os = "linux")]
 const ROOMY: libc::c_int = 1 << 20;
 
@@ -202,9 +201,8 @@ pub fn run(query: Query) -> ExitCode {
     let habits = rank.then(|| std::thread::spawn(Habits::load));
     let mut first = search(&query, plan, view, Pass::First, keep);
     let failed = first.failed;
-    let large = first.advice == Advice::Large && first.tally.entries >= BIG;
-    let stale = first.advice == Advice::Build || first.tally.worn();
-    let build = (large || stale) && !stop::asked();
+    let advice = first.advice;
+    let (worn, walked) = (first.tally.worn(), first.tally.entries);
     let habits = habits.and_then(|loading| loading.join().ok());
     if let Some(habits) = &habits {
         let extra = remembered(&query, habits, &first.blocks, view);
@@ -237,9 +235,7 @@ pub fn run(query: Query) -> ExitCode {
         eprintln!("syk: stopped before the search finished.");
         return ExitCode::from(130);
     }
-    if build {
-        background(&query);
-    }
+    background(&query, advice, worn, walked);
     hints(&query, found, tally.withheld);
     status(found, ran, failed)
 }

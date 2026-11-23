@@ -1,10 +1,10 @@
 use std::ffi::OsStr;
-use std::fs::{self, File, Metadata};
+use std::fs::{self, File, FileTimes, Metadata};
 use std::ops::Range;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use memmap2::Mmap;
 
@@ -17,6 +17,7 @@ pub const RECORD: usize = 20;
 pub const FOLDER: usize = 40;
 const STAMP: usize = 32;
 pub const SLACK: i64 = 2_000_000_000;
+const HOUR: Duration = Duration::from_secs(3600);
 pub const RACY: u32 = 1;
 pub const GITIGNORE: u32 = 2;
 pub const IGNORE: u32 = 4;
@@ -330,6 +331,16 @@ impl Index {
 
     pub fn root(&self) -> &Path {
         Path::new(OsStr::from_bytes(&self.map[self.root.clone()]))
+    }
+
+    pub fn used(self) -> Index {
+        let lately = fs::metadata(&self.path)
+            .and_then(|found| found.accessed())
+            .is_ok_and(|used| used.elapsed().is_ok_and(|age| age < HOUR));
+        if !lately && let Ok(file) = File::open(&self.path) {
+            let _ = file.set_times(FileTimes::new().set_accessed(SystemTime::now()));
+        }
+        self
     }
 
     pub fn view(&self) -> &'static str {

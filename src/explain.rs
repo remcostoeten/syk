@@ -53,10 +53,8 @@ fn pattern(out: &mut String, label: &str, role: &str, pattern: &Pattern, matchin
     row(out, "", role);
 }
 
-pub fn render(query: &Query) -> Result<String, String> {
-    let mut out = String::new();
-    let matching = &query.matching;
-    match compile(query)? {
+fn patterns(out: &mut String, compiled: Compiled, matching: &Matching) {
+    match compiled {
         Compiled::Union {
             pattern: found,
             targets,
@@ -73,14 +71,14 @@ pub fn render(query: &Query) -> Result<String, String> {
             }
             match found {
                 Some(found) => pattern(
-                    &mut out,
+                    out,
                     "pattern",
                     &format!("matched against {}", places.join(", ")),
                     &found,
                     matching,
                 ),
                 None => row(
-                    &mut out,
+                    out,
                     "pattern",
                     &format!("none, so this lists {}", places.join(" and ")),
                 ),
@@ -89,7 +87,7 @@ pub fn render(query: &Query) -> Result<String, String> {
         Compiled::Narrow { dir, name, content } => {
             if let Some(dir) = &dir {
                 pattern(
-                    &mut out,
+                    out,
                     "folders",
                     "only entries below a folder whose name matches are considered",
                     dir,
@@ -102,11 +100,11 @@ pub fn render(query: &Query) -> Result<String, String> {
                 } else {
                     "files and folders whose name matches are printed"
                 };
-                pattern(&mut out, "names", role, name, matching);
+                pattern(out, "names", role, name, matching);
             }
             if let Some(content) = &content {
                 pattern(
-                    &mut out,
+                    out,
                     "contents",
                     "lines that match are printed",
                     content,
@@ -115,14 +113,9 @@ pub fn render(query: &Query) -> Result<String, String> {
             }
         }
     }
+}
 
-    let roots: Vec<String> = query
-        .roots
-        .iter()
-        .map(|root| root.display().to_string())
-        .collect();
-    row(&mut out, "in", &roots.join(", "));
-
+fn filters(out: &mut String, query: &Query) {
     let filters = &query.filters;
     let mut lines: Vec<String> = Vec::new();
     if !filters.extensions.is_empty() {
@@ -160,9 +153,11 @@ pub fn render(query: &Query) -> Result<String, String> {
         lines.push("folders are not reported while a file filter is active".to_string());
     }
     for (index, line) in lines.iter().enumerate() {
-        row(&mut out, if index == 0 { "filters" } else { "" }, line);
+        row(out, if index == 0 { "filters" } else { "" }, line);
     }
+}
 
+fn skips(out: &mut String, query: &Query) {
     let walk = &query.walk;
     let hidden = walk.hidden || walk.all;
     let ignored = walk.no_ignore || walk.all;
@@ -176,17 +171,19 @@ pub fn render(query: &Query) -> Result<String, String> {
     .filter(|(skips, _)| *skips)
     .map(|(_, what)| what)
     .collect();
-    row(&mut out, "skips", &skipped.join(", "));
-    for group in filters.groups.iter().filter(|_| !ignored) {
+    row(out, "skips", &skipped.join(", "));
+    for group in query.filters.groups.iter().filter(|_| !ignored) {
         let what = match group.skip {
             Skip::Off => continue,
             Skip::Contents => "the contents of the group",
             Skip::Whole => "the group",
         };
         let names = group.patterns.join(", ");
-        row(&mut out, "", &format!("{what} {}: {names}", group.name));
+        row(out, "", &format!("{what} {}: {names}", group.name));
     }
+}
 
+fn output(out: &mut String, query: &Query) {
     let mut output: Vec<String> = Vec::new();
     if query.output.browse {
         let then = match (&query.output.exec, query.output.open) {
@@ -236,10 +233,24 @@ pub fn render(query: &Query) -> Result<String, String> {
     if crate::kept::ranked(query, std::io::IsTerminal::is_terminal(&std::io::stdout())) {
         output.push("ranked by relevance".to_string());
     }
-    if walk.sort {
+    if query.walk.sort {
         output.push("sorted by path, one thread".to_string());
     }
-    row(&mut out, "output", &output.join(", "));
+    row(out, "output", &output.join(", "));
+}
+
+pub fn render(query: &Query) -> Result<String, String> {
+    let mut out = String::new();
+    patterns(&mut out, compile(query)?, &query.matching);
+    let roots: Vec<String> = query
+        .roots
+        .iter()
+        .map(|root| root.display().to_string())
+        .collect();
+    row(&mut out, "in", &roots.join(", "));
+    filters(&mut out, query);
+    skips(&mut out, query);
+    output(&mut out, query);
     if let Some(defaults) = &query.defaults {
         row(&mut out, "defaults", &defaults.args.join(" "));
         row(&mut out, "", &format!("from {}", defaults.path.display()));

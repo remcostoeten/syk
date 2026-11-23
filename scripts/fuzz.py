@@ -2,7 +2,6 @@
 import argparse
 import os
 import random
-import re
 import shutil
 import subprocess
 import sys
@@ -20,7 +19,8 @@ METHOD = (
     "files only, which leave every folder as it was. After every round each query "
     "runs twice, once with the index and once with -Y, and the results, the errors and "
     "the exit status have to be the same. A third run with -Y and -o walks with the other "
-    "of the two folder walkers, and has to find the same again. The exit status is 1 at "
+    "of the two folder walkers, and has to find the same again. Some queries search a "
+    "folder inside the tree, which reads the index of the tree. The exit status is 1 at "
     "the first difference. "
     "Trees are made in a temporary folder, which has to be on a file system that syk "
     "builds an index for."
@@ -110,9 +110,6 @@ QUERIES = [
     ["-n", "lock", "-c", "needle"],
 ]
 SETTLE = 2.1
-# The walkers word a failed folder differently, with or without this prefix
-WORDING = re.compile(rb"IO error for operation on [^:]*: ")
-
 
 def search(syk, env, root, query):
     done = subprocess.run(
@@ -127,7 +124,7 @@ def search(syk, env, root, query):
         lines = sorted(lines)
     notes = [line for line in done.stderr.split(b"\n") if line]
     totals = [line for line in notes if b"matched. Read" in line]
-    errors = sorted(WORDING.sub(b"", line) for line in notes if line not in totals)
+    errors = sorted(line for line in notes if line not in totals)
     return (lines, errors, done.returncode), totals[0] if totals else b""
 
 
@@ -209,8 +206,15 @@ def restore(root):
                 pass
 
 
+def inner(root):
+    below = [path for path in folders(root) if path != root and os.access(path, os.R_OK | os.X_OK)]
+    chosen = random.sample(below, min(3, len(below)))
+    return [[f"{path.relative_to(root)}/"] for path in chosen]
+
+
 def compare(syk, env, root, label, used):
-    for query in QUERIES:
+    nested = [query + place for place in inner(root) for query in random.sample(QUERIES, 6)]
+    for query in QUERIES + nested:
         indexed, totals = search(syk, env, root, query)
         walked, _ = search(syk, env, root, query + ["-Y"])
         if b"from the index" in totals:

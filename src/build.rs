@@ -2,13 +2,15 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
 use ignore::WalkBuilder;
 
 use crate::check::{git, outer, probe, trusted};
+use crate::group::Skips;
 use crate::index::{
     BELOW, FOLDER, Folder, GIT, GITIGNORE, HEAD, IGNORE, Index, MAGIC, RACY, RECORD, Record, Stamp,
     Watched, key, now, place, store,
@@ -127,6 +129,27 @@ fn stamp(path: &Path, depth: usize) -> Stamp {
         .unwrap_or_default()
 }
 
+fn bound(builder: &mut WalkBuilder, root: &Path, skips: Skips) {
+    let device = fs::metadata(root).map_or(0, |found| found.dev());
+    let last: Mutex<(PathBuf, bool)> = Mutex::new((PathBuf::new(), true));
+    builder.filter_entry(move |entry| {
+        if entry.depth() == 0 {
+            return true;
+        }
+        if skips.matches(entry.file_name().as_bytes()) {
+            return false;
+        }
+        let (Some(parent), Ok(mut last)) = (entry.path().parent(), last.lock()) else {
+            return true;
+        };
+        if entry.depth() > 1 && last.0 != parent {
+            let same = fs::symlink_metadata(parent).is_ok_and(|found| found.dev() == device);
+            *last = (parent.to_path_buf(), same);
+        }
+        entry.depth() == 1 || last.1
+    });
+}
+
 fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, String> {
     let mut draft = Draft {
         records: Vec::new(),
@@ -170,11 +193,12 @@ fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, 
             record.tag = Record::tag(form, slot);
             let path = entry.path();
             let stamp = stamp(path, depth);
-            if *device.get_or_insert(stamp.device) != stamp.device {
-                return Err(format!("{} is on another file system", path.display()));
-            }
+            let crossed = *device.get_or_insert(stamp.device) != stamp.device;
             let found = draft.folder(at, path, stamp, started);
-            draft.watch(path, prefix, found);
+            match (crossed, draft.folders.last_mut()) {
+                (true, Some(folder)) => folder.flags |= RACY,
+                _ => draft.watch(path, prefix, found),
+            }
             open.push(at);
         }
         draft.records.push(record);
@@ -276,9 +300,11 @@ pub fn prune(store: &Path) {
 pub fn build(
     root: &Path,
     print: &str,
-    builder: WalkBuilder,
+    mut builder: WalkBuilder,
+    skips: Skips,
     threads: usize,
 ) -> Result<Built, String> {
+    bound(&mut builder, root, skips);
     let real = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
     let store = store().ok_or("there is no cache folder, because HOME is not set")?;
     fs::DirBuilder::new()

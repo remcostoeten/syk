@@ -259,6 +259,10 @@ pub struct Index {
     pub names: Range<usize>,
     context: Range<usize>,
     pub failures: Vec<(u32, Range<usize>)>,
+    pub span: Range<u32>,
+    pub within: Range<u32>,
+    pub floor: u16,
+    pub inner: Vec<u8>,
 }
 
 impl Index {
@@ -309,6 +313,10 @@ impl Index {
             names,
             context,
             failures,
+            span: 0..entries,
+            within: 0..folders,
+            floor: 0,
+            inner: Vec::new(),
         })
     }
 
@@ -359,7 +367,7 @@ impl Index {
                 parent: word(bytes, 4),
                 end: word(bytes, 8),
                 len: short(bytes, 12),
-                depth: short(bytes, 14),
+                depth: short(bytes, 14).saturating_sub(self.floor),
                 tag: word(bytes, 16),
             },
             _ => Record::default(),
@@ -421,7 +429,11 @@ impl Index {
 
     pub fn failure(&self, text: Range<usize>, root: &[u8]) -> String {
         let stored = String::from_utf8_lossy(&self.map[text]);
-        let real = String::from_utf8_lossy(&self.map[self.root.clone()]);
+        let real = match self.inner.is_empty() {
+            true => &self.map[self.root.clone()],
+            false => &self.inner[..],
+        };
+        let real = String::from_utf8_lossy(real);
         let given = String::from_utf8_lossy(root);
         let inside = format!("{}/", real.trim_end_matches('/'));
         match stored.strip_prefix(real.as_ref()) {

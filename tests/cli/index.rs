@@ -249,3 +249,73 @@ fn stored_indexes_can_be_listed_and_removed() {
             .contains("list, clear or prune")
     );
 }
+
+#[test]
+fn clearing_indexes_refuses_other_flags() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.run(&["-y"]).1, 0);
+    for args in [&["-A", "clear", "-n", "x"][..], &["-A", "clear", "+1kb"]] {
+        assert_eq!(fixture.run(args).1, 2, "{args:?}");
+    }
+    assert!(fixture.run(&["-A"]).0.contains("1 index,"));
+}
+
+#[test]
+fn a_folder_inside_an_indexed_tree_uses_its_index() {
+    let fixture = Fixture::new();
+    std::thread::sleep(Duration::from_millis(2100));
+    assert_eq!(fixture.run(&["-y"]).1, 0);
+    let run = |args: &[&str]| {
+        fixture
+            .command(&[args, &["-T", "-p"]].concat())
+            .output()
+            .expect("run syk")
+    };
+    let inside = run(&["-n", "route", "src/"]);
+    assert!(String::from_utf8_lossy(&inside.stderr).contains("from the index"));
+    let walked = run(&["-n", "route", "src/", "-Y"]);
+    let sorted = |bytes: &[u8]| {
+        let mut lines: Vec<String> = String::from_utf8_lossy(bytes)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(sorted(&inside.stdout), sorted(&walked.stdout));
+    assert_eq!(fixture.run(&["-A"]).0.matches("1 index,").count(), 1);
+
+    let ignored = run(&["-n", "skip", "ignored/"]);
+    assert!(!String::from_utf8_lossy(&ignored.stderr).contains("from the index"));
+}
+
+#[cfg(unix)]
+#[test]
+fn an_index_repeats_the_errors_below_a_folder_inside_it() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = Fixture::new();
+    fixture.file("src/locked/inner.txt", "needle\n");
+    let locked = fixture.root.join("src/locked");
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).expect("lock");
+    let readable = fs::read_dir(&locked).is_ok();
+    std::thread::sleep(Duration::from_millis(2100));
+    let built = fixture.run(&["-y"]).1;
+    let errors = |extra: &[&str]| {
+        let args = [&["-n", "route", "src/", "-T", "-p"][..], extra].concat();
+        let output = fixture.command(&args).output().expect("run syk");
+        let text = String::from_utf8_lossy(&output.stderr).into_owned();
+        (text, output.status.code())
+    };
+    let (indexed, status) = errors(&[]);
+    let (walked, walked_status) = errors(&["-Y"]);
+    fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).expect("unlock");
+    assert_eq!(built, 0);
+    assert!(indexed.contains("from the index"), "{indexed}");
+    assert_eq!(status, walked_status);
+    if !readable {
+        let denied = |text: &str| text.lines().next().map(str::to_string);
+        assert_eq!(denied(&indexed), denied(&walked));
+        assert!(indexed.starts_with("syk: src/locked: "), "{indexed}");
+    }
+}

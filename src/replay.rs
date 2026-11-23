@@ -62,13 +62,13 @@ pub fn stored(query: &Query, sorted: bool) -> (Option<Stored>, Advice) {
     }
     let root = &query.roots[0];
     let index = match Index::open(root, &print(query)) {
-        Opened::Ready(index) => index,
+        Opened::Ready(index) => *index,
         Opened::Stale => return (None, Advice::Build),
         Opened::Missing => return (None, Advice::Large),
     };
     let bytes = root.as_os_str().as_bytes();
     let dirty = index.stale(bytes, threads(query));
-    let limit = (index.folders() as usize / 16).max(64);
+    let limit = (index.within.len() / 16).max(64);
     if dirty.len() > limit {
         return (None, Advice::Build);
     }
@@ -192,13 +192,14 @@ pub fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
         gate: gate.as_ref().map(|gate| gate as &scan::Gate<'_>),
         verdicts: verdicts.as_ref(),
     };
-    let total = index.entries();
+    let span = index.span.clone();
+    let total = span.end - span.start;
     if sorted {
         let mut worker = Worker::new(shared, 0);
-        scan.run(0..total, &mut |visit| worker.take(visit));
+        scan.run(span, &mut |visit| worker.take(visit));
         return;
     }
-    let next = AtomicU32::new(0);
+    let next = AtomicU32::new(span.start);
     let size = (total / (threads(query) as u32 * 8).max(1)).clamp(PIECE.start, PIECE.end);
     let crew = threads(query).clamp(1, total.div_ceil(size) as usize);
     std::thread::scope(|scope| {
@@ -208,10 +209,10 @@ pub fn replay(shared: &Shared, query: &Query, stored: Stored, sorted: bool) {
                 let mut going = true;
                 while going && !shared.budget.stopped() {
                     let from = next.fetch_add(size, Ordering::Relaxed);
-                    if from >= total {
+                    if from >= span.end {
                         break;
                     }
-                    let piece = from..from.saturating_add(size).min(total);
+                    let piece = from..from.saturating_add(size).min(span.end);
                     going = scan.run(piece, &mut |visit| worker.take(visit));
                 }
             });
@@ -233,7 +234,13 @@ pub fn reindex(mut query: Query, started: Instant) -> ExitCode {
         query.roots[0] = real;
     }
     let root = &query.roots[0];
-    match build::build(root, &print(query), walker(query), threads(query)) {
+    match build::build(
+        root,
+        &print(query),
+        walker(query),
+        skips(query, Skip::Whole),
+        threads(query),
+    ) {
         Ok(built) => {
             println!(
                 "Indexed {} in {} and the contents of {} below {} in {:.2} s.",
@@ -257,6 +264,7 @@ pub fn background(query: &Query) {
     let Ok(root) = fs::canonicalize(&query.roots[0]) else {
         return;
     };
+    let root = Index::cover(&root, &print).unwrap_or(root);
     if !build::wanted(&root, &print) {
         return;
     }

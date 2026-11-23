@@ -2,6 +2,7 @@ use crate::pattern::Pattern;
 use crate::query::{Plan, Query, Targets, Terms};
 
 #[allow(clippy::large_enum_variant)]
+#[derive(Clone)]
 pub enum Compiled {
     Union {
         pattern: Option<Pattern>,

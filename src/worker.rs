@@ -4,8 +4,8 @@ use std::fs::File;
 use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
 use grep_matcher::Matcher;
@@ -171,6 +171,7 @@ struct Waiting {
 
 pub struct Worker<'a> {
     shared: &'a Shared,
+    plan: Arc<Compiled>,
     searcher: Searcher,
     loaded: Vec<u8>,
     ahead: usize,
@@ -196,6 +197,7 @@ impl<'a> Worker<'a> {
             .build();
         Worker {
             shared,
+            plan: Arc::new(shared.plan.clone()),
             searcher,
             loaded: Vec::new(),
             ahead,
@@ -372,7 +374,8 @@ impl<'a> Worker<'a> {
             return;
         }
         let name = entry.file_name().as_bytes();
-        let hit = match &shared.plan {
+        let plan = Arc::clone(&self.plan);
+        let hit = match &*plan {
             Compiled::Union { pattern, targets } => {
                 if !targets.dirs {
                     return;
@@ -442,7 +445,8 @@ impl<'a> Worker<'a> {
         if shared.stat && !self.passes_stat(entry) {
             return None;
         }
-        let (hit, alone) = match &shared.plan {
+        let plan = Arc::clone(&self.plan);
+        let (hit, alone) = match &*plan {
             Compiled::Union { pattern, targets } => {
                 let hit = match pattern {
                     _ if !targets.files => None,
@@ -492,7 +496,8 @@ impl<'a> Worker<'a> {
     }
 
     fn weigh(&mut self, entry: &Item<'_>) {
-        let Some(pattern) = self.shared.plan.content() else {
+        let plan = Arc::clone(&self.plan);
+        let Some(pattern) = plan.content() else {
             return;
         };
         let mut lines = 0;
@@ -524,7 +529,8 @@ impl<'a> Worker<'a> {
         };
         let named = job.named;
         self.quality = rank::quality(name, item.hit);
-        let Some(pattern) = shared.plan.content().filter(|_| job.plain) else {
+        let plan = Arc::clone(&self.plan);
+        let Some(pattern) = plan.content().filter(|_| job.plain) else {
             if named {
                 self.path_line(&item, true);
             }

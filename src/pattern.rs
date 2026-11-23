@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use grep_matcher::{LineTerminator, Match, Matcher, NoCaptures, NoError};
 use grep_regex::{RegexMatcher, RegexMatcherBuilder};
+use memchr::memmem::Finder;
 
 use crate::need::{self, Need};
 use crate::query::{Case, Matching};
@@ -13,22 +14,80 @@ pub enum Reading {
     Glob,
 }
 
+const REGEX_SYNTAX: &[char] = &[
+    '\\', '.', '+', '*', '?', '(', ')', '|', '[', ']', '{', '}', '^', '$', '\n',
+];
+
+#[derive(Clone)]
+struct Word {
+    finder: Finder<'static>,
+    text: Vec<u8>,
+    fold: bool,
+}
+
+impl Word {
+    fn of(source: &str, matching: &Matching) -> Option<Word> {
+        let usable = !matching.word
+            && !source.is_empty()
+            && source.is_ascii()
+            && !source.contains(REGEX_SYNTAX);
+        usable.then(|| Word {
+            finder: Finder::new(source.as_bytes()).into_owned(),
+            text: source.as_bytes().to_vec(),
+            fold: match matching.case {
+                Case::Smart => !has_uppercase(source),
+                Case::Insensitive => true,
+                Case::Sensitive => false,
+            },
+        })
+    }
+
+    fn covers(&self, name: &[u8]) -> bool {
+        !self.fold || name.is_ascii()
+    }
+
+    fn find(&self, name: &[u8]) -> Option<(usize, usize)> {
+        let length = self.text.len();
+        if !self.fold {
+            let start = self.finder.find(name)?;
+            return Some((start, start + length));
+        }
+        let first = self.text[0];
+        let (lower, upper) = (first.to_ascii_lowercase(), first.to_ascii_uppercase());
+        let mut at = 0;
+        while at + length <= name.len() {
+            let start = at + memchr::memchr2(lower, upper, &name[at..=name.len() - length])?;
+            if name[start..start + length].eq_ignore_ascii_case(&self.text) {
+                return Some((start, start + length));
+            }
+            at = start + 1;
+        }
+        None
+    }
+}
+
+#[derive(Clone)]
 pub struct Term {
     pub source: String,
     pub reading: Reading,
     lines: RegexMatcher,
     names: Option<RegexMatcher>,
+    word: Option<Word>,
     matching: Matching,
     listed: OnceLock<Option<RegexMatcher>>,
 }
 
 impl Term {
     fn compile(source: &str, matching: &Matching) -> Result<Term, String> {
-        let plain = |reading, names| -> Result<Term, String> {
+        let plain = |reading, names: Option<RegexMatcher>| -> Result<Term, String> {
             Ok(Term {
                 source: source.to_string(),
                 reading,
                 lines: build(source, matching, true, false).map_err(|error| error.to_string())?,
+                word: names
+                    .is_none()
+                    .then(|| Word::of(source, matching))
+                    .flatten(),
                 names,
                 matching: *matching,
                 listed: OnceLock::new(),
@@ -43,6 +102,7 @@ impl Term {
                 reading: Reading::Regex,
                 lines,
                 names: None,
+                word: Word::of(source, matching),
                 matching: *matching,
                 listed: OnceLock::new(),
             }),
@@ -73,6 +133,9 @@ impl Term {
     }
 
     fn find(&self, name: &[u8]) -> Option<(usize, usize)> {
+        if let Some(word) = self.word.as_ref().filter(|word| word.covers(name)) {
+            return word.find(name);
+        }
         let matcher = self.names.as_ref().unwrap_or(&self.lines);
         match matcher.find(name) {
             Ok(Some(found)) => Some((found.start(), found.end())),
@@ -88,6 +151,7 @@ impl Term {
     }
 }
 
+#[derive(Clone)]
 pub struct Pattern {
     terms: Vec<Term>,
     any: Option<RegexMatcher>,
@@ -379,6 +443,51 @@ mod tests {
             [(13, &b"pub"[..]), (19, &b"unsafe"[..]), (28, &b"pub"[..])]
         );
         assert_eq!(pattern.rarest, 1);
+    }
+
+    #[test]
+    fn a_plain_word_finds_the_same_as_the_regex() {
+        let sources = [
+            "lib", "LIB", "Lib", "k", "s", "a b", "foo-bar", "x#y", "é", "needle", "aa", "z",
+        ];
+        let names: [&[u8]; 16] = [
+            b"",
+            b"a",
+            b"aaa",
+            b"libssl.so",
+            b"LIBSSL.SO",
+            b"my-Lib",
+            b"\xE2\x84\xAA",
+            b"\xC5\xBF",
+            b"K\xE2\x84\xAA",
+            b"caf\xC3\xA9",
+            b"bad\xFFlib",
+            b"foo-bar",
+            b"FOO-BAR",
+            b"a b",
+            b"x#y",
+            b"nee\ndle needle",
+        ];
+        let cases = [Case::Smart, Case::Insensitive, Case::Sensitive];
+        for (source, case) in sources
+            .iter()
+            .flat_map(|source| cases.map(|case| (source, case)))
+        {
+            let matching = Matching {
+                case,
+                literal: false,
+                word: false,
+            };
+            let term = Term::compile(source, &matching).expect("a term");
+            for name in names {
+                let by_regex = term
+                    .lines
+                    .find(name)
+                    .expect("no error")
+                    .map(|found| (found.start(), found.end()));
+                assert_eq!(term.find(name), by_regex, "{source} in {name:?}");
+            }
+        }
     }
 
     #[test]

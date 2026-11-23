@@ -68,7 +68,7 @@ publish_aur() {
     fi
     local work
     work=$(mktemp -d)
-    trap 'rm -rf "$work"' RETURN
+    trap 'rm -rf "$work" 2>/dev/null || true' RETURN
     mkdir "$work/build"
     package "$work/build"
     printf '%s\n' "$AUR_SSH_KEY" >"$work/key"

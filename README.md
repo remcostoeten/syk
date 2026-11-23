@@ -15,7 +15,7 @@ A command line tool that searches folder names, file names and file contents in 
 </p>
 
 <p align="center">
-  <img src="docs/demo.gif" width="100%" alt="syk searches for login below src, narrows a content search to files named route, lists old log files, lets you choose one result from a list, and pages through its help with a search" />
+  <img src="docs/demo.gif" width="100%" alt="syk searches for login, narrows a content search to files named route, searches a log that is piped in, and lists log files older than 30 days" />
 </p>
 <p align="center">
   <sub>Recorded with VHS in bash.</sub>

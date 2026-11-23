@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crate::build::{cramped, prune};
+use crate::build::{cramped, prune, unplugged};
 use crate::index::{Index, now, store};
 use crate::report::{counted, grouped};
 
@@ -131,6 +131,10 @@ fn list(store: &Path, items: &[Held]) -> ExitCode {
     if cramped() {
         println!(
             "Less than 2 GB is free on this disk, so syk builds no index by itself. syk -y builds one anyway.\n"
+        );
+    } else if unplugged() {
+        println!(
+            "This computer runs on its battery, so syk builds no index of the home folder by itself. syk -y builds one anyway.\n"
         );
     }
     if items.is_empty() {

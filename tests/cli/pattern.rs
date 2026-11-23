@@ -31,3 +31,12 @@ fn several_words_have_to_match_together() {
     );
     assert_eq!(fixture.run(&["other", "zzmissing"]).1, 1);
 }
+
+#[test]
+fn an_empty_word_is_refused() {
+    let fixture = Fixture::new();
+    assert_eq!(fixture.run(&[""]).1, 2);
+    assert!(fixture.errors(&["", "src/"]).contains("is empty"));
+    assert_eq!(fixture.run(&["--", ""]).1, 2);
+    assert!(!fixture.lines(&["-n"]).is_empty());
+}

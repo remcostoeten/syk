@@ -1,6 +1,4 @@
-use crate::Fixture;
-#[cfg(target_os = "linux")]
-use crate::Terminal;
+use crate::{Fixture, Terminal};
 
 #[test]
 fn hidden_and_ignored_entries_are_opt_in() {
@@ -88,7 +86,6 @@ fn the_global_gitignore_is_read_from_where_git_keeps_it() {
     assert!(listed(&[]).is_empty() && listed(&["-o"]).is_empty());
 }
 
-#[cfg(target_os = "linux")]
 #[test]
 fn a_search_that_finds_nothing_says_what_the_skipped_places_hold() {
     let fixture = Fixture::new();

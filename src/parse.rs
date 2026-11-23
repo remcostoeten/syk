@@ -480,6 +480,9 @@ impl Draft {
         let mut roots: Vec<PathBuf> = Vec::new();
         let mut first_forced = true;
         for word in std::mem::take(&mut self.words) {
+            if word.text.is_empty() {
+                return Err("one of the words is empty, and an empty pattern matches everything. A variable that holds no text gives this. To list every name, write: syk -n".to_string());
+            }
             if word.forced {
                 if first_forced {
                     patterns.push(word.text);

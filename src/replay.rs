@@ -305,15 +305,31 @@ fn tell(home: &Path) {
     }
 }
 
+fn same(query: &Query) -> Vec<String> {
+    let mut flags = vec!["-U".to_string(), "-u".to_string(), group::EVERY.to_string()];
+    flags.extend(view(query).split(' ').map(str::to_string));
+    flags.retain(|flag| !flag.is_empty());
+    let whole = query
+        .filters
+        .groups
+        .iter()
+        .filter(|group| group.skip == Skip::Whole);
+    for group in whole {
+        flags.push("-g".to_string());
+        flags.push(format!("{}={}", group.name, group.patterns.join(",")));
+    }
+    flags
+}
+
 pub fn background(query: &Query, advice: Advice, worn: bool, entries: u64) {
-    if !indexable(query) {
+    let renew = advice == Advice::Build || worn;
+    if !indexable(query) || !(renew || advice == Advice::Large) {
         return;
     }
     let print = print(query);
     let Ok(real) = fs::canonicalize(&query.roots[0]) else {
         return;
     };
-    let renew = advice == Advice::Build || worn;
     let home = match (renew, advice) {
         (false, Advice::Large) => homeward(query, &real, &print),
         _ => None,
@@ -327,21 +343,9 @@ pub fn background(query: &Query, advice: Advice, worn: bool, entries: u64) {
     if !build::wanted(&root, &print) || build::busy() || build::cramped() {
         return;
     }
-    let mut flags = vec!["-U".to_string(), "-u".to_string(), group::EVERY.to_string()];
-    flags.extend(view(query).split(' ').map(str::to_string));
-    flags.retain(|flag| !flag.is_empty());
-    let whole = query
-        .filters
-        .groups
-        .iter()
-        .filter(|group| group.skip == Skip::Whole);
-    for group in whole {
-        flags.push("-g".to_string());
-        flags.push(format!("{}={}", group.name, group.patterns.join(",")));
-    }
     let mut folder = root.into_os_string();
     folder.push("/");
-    if build::spawn(Path::new(&folder), &flags).is_ok()
+    if build::spawn(Path::new(&folder), &same(query)).is_ok()
         && let Some(home) = home
     {
         tell(&home);

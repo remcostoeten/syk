@@ -379,7 +379,7 @@ fn the_first_search_from_a_terminal_indexes_the_home_folder() {
     let listed = |fixture: &Fixture| fixture.run(&["-A"]).0;
     assert_eq!(fixture.run(&["-n", "route", "src/"]).1, 0);
     assert!(listed(&fixture).contains("No indexes in"));
-    if listed(&fixture).contains("builds no index by itself") {
+    if listed(&fixture).contains("by itself") {
         return;
     }
 

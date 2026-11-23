@@ -44,11 +44,87 @@ struct Draft {
     failures: Vec<(u32, String)>,
 }
 
+impl Draft {
+    fn record(
+        &mut self,
+        at: u32,
+        name: &[u8],
+        parent: u32,
+        depth: usize,
+        form: Form,
+    ) -> Result<Record, String> {
+        if depth > usize::from(u16::MAX) || name.len() > usize::from(u16::MAX) || at >= 1 << 29 {
+            return Err("the tree is too large or too deep for an index".to_string());
+        }
+        let record = Record {
+            name: self.names.len() as u32,
+            parent,
+            end: at + 1,
+            len: name.len() as u16,
+            depth: depth as u16,
+            tag: Record::tag(
+                form,
+                self.records.get(parent as usize).map_or(0, Record::slot),
+            ),
+        };
+        self.names.extend(name);
+        self.names.push(b'\n');
+        Ok(record)
+    }
+
+    fn folder(&mut self, at: u32, path: &Path, stamp: Stamp, started: i64) -> u32 {
+        let found = probe(path);
+        let racy = if stamp.recent(started) || stamp == Stamp::default() {
+            RACY
+        } else {
+            0
+        };
+        self.folders.push(Folder {
+            entry: at,
+            flags: found | racy,
+            stamp,
+        });
+        found
+    }
+
+    fn watch(&mut self, path: &Path, prefix: usize, found: u32) {
+        let rest = path.as_os_str().as_bytes().get(prefix..).unwrap_or(&[]);
+        let start = rest.iter().take_while(|byte| **byte == b'/').count();
+        let inner = Path::new(OsStr::from_bytes(&rest[start..]));
+        for (name, bit) in [(".gitignore", GITIGNORE), (".ignore", IGNORE)] {
+            if found & bit != 0 {
+                self.inside
+                    .push(Watched::new(&path.join(name), &inner.join(name), BELOW));
+            }
+        }
+        if found & GIT != 0 {
+            for watched in git(path) {
+                match watched.strip_prefix(path) {
+                    Ok(rest) => self
+                        .inside
+                        .push(Watched::new(&watched, &inner.join(rest), BELOW)),
+                    Err(_) => self.inside.push(Watched::new(&watched, &watched, 0)),
+                }
+            }
+        }
+    }
+}
+
 fn refuse(root: &Path, print: &str, reason: &str) -> String {
     if let Some(marker) = place(root, print, "no") {
         let _ = fs::write(marker, reason);
     }
     reason.to_string()
+}
+
+fn stamp(path: &Path, depth: usize) -> Stamp {
+    let found = match depth {
+        0 => fs::metadata(path),
+        _ => fs::symlink_metadata(path),
+    };
+    found
+        .map(|metadata| Stamp::of(&metadata))
+        .unwrap_or_default()
 }
 
 fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, String> {
@@ -87,70 +163,18 @@ fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, 
             _ => entry.file_name().as_bytes(),
         };
         let parent = open.last().copied().unwrap_or(0);
-        if depth > usize::from(u16::MAX) || name.len() > usize::from(u16::MAX) || at >= 1 << 29 {
-            return Err("the tree is too large or too deep for an index".to_string());
-        }
         let form = Form::of(kind);
-        let mut record = Record {
-            name: draft.names.len() as u32,
-            parent,
-            end: at + 1,
-            len: name.len() as u16,
-            depth: depth as u16,
-            tag: Record::tag(
-                form,
-                draft.records.get(parent as usize).map_or(0, Record::slot),
-            ),
-        };
-        draft.names.extend(name);
-        draft.names.push(b'\n');
+        let mut record = draft.record(at, name, parent, depth, form)?;
         if form == Form::Dir {
             let slot = draft.folders.len() as u32;
             record.tag = Record::tag(form, slot);
             let path = entry.path();
-            let found = match depth {
-                0 => fs::metadata(path),
-                _ => fs::symlink_metadata(path),
-            };
-            let stamp = found
-                .map(|metadata| Stamp::of(&metadata))
-                .unwrap_or_default();
+            let stamp = stamp(path, depth);
             if *device.get_or_insert(stamp.device) != stamp.device {
                 return Err(format!("{} is on another file system", path.display()));
             }
-            let found = probe(path);
-            let racy = if stamp.recent(started) || stamp == Stamp::default() {
-                RACY
-            } else {
-                0
-            };
-            draft.folders.push(Folder {
-                entry: at,
-                flags: found | racy,
-                stamp,
-            });
-            let rest = path.as_os_str().as_bytes().get(prefix..).unwrap_or(&[]);
-            let start = rest.iter().take_while(|byte| **byte == b'/').count();
-            let inner = Path::new(OsStr::from_bytes(&rest[start..]));
-            for (name, bit) in [(".gitignore", GITIGNORE), (".ignore", IGNORE)] {
-                if found & bit != 0 {
-                    draft
-                        .inside
-                        .push(Watched::new(&path.join(name), &inner.join(name), BELOW));
-                }
-            }
-            if found & GIT != 0 {
-                for watched in git(path) {
-                    match watched.strip_prefix(path) {
-                        Ok(rest) => {
-                            draft
-                                .inside
-                                .push(Watched::new(&watched, &inner.join(rest), BELOW))
-                        }
-                        Err(_) => draft.inside.push(Watched::new(&watched, &watched, 0)),
-                    }
-                }
-            }
+            let found = draft.folder(at, path, stamp, started);
+            draft.watch(path, prefix, found);
             open.push(at);
         }
         draft.records.push(record);

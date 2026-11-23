@@ -21,7 +21,7 @@ A command line tool that searches folder names, file names and file contents in 
   <sub>Recorded with VHS in bash.</sub>
 </p>
 
-`syk foo` looks for foo in folder names, in file names and in the lines of files, and prints every hit. It walks and searches with the crates behind ripgrep, so hidden, ignored and binary files are skipped unless you ask for them.
+`syk foo` looks for foo in folder names, in file names and in the lines of files, and prints every hit. It applies ignore rules and searches lines with the crates behind ripgrep, so hidden, ignored and binary files are skipped unless you ask for them.
 
 - **Arguments in any order.** `syk foo src/ .ts +10kb -2h` is a pattern, a path, an extension, a minimum size and a maximum age, recognised by their shape.
 - **One target or several.** `-n`, `-d` and `-c` search names, folders or contents only, and `-n route -c auth` prints the lines matching auth in files named route.

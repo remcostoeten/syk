@@ -1,6 +1,8 @@
 mod act;
 mod banner;
 mod config;
+#[cfg(target_os = "linux")]
+mod crawl;
 mod explain;
 mod filter;
 mod flags;
@@ -21,6 +23,8 @@ mod query;
 mod rank;
 mod replay;
 mod report;
+#[cfg(target_os = "linux")]
+mod rule;
 mod run;
 mod search;
 mod setup;

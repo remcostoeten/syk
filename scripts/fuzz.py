@@ -19,7 +19,9 @@ METHOD = (
     "turn into binary files. A new index is first tried with changes to the text of "
     "files only, which leave every folder as it was. After every round each query "
     "runs twice, once with the index and once with -Y, and the results, the errors and "
-    "the exit status have to be the same. The exit status is 1 at the first difference. "
+    "the exit status have to be the same. A third run with -Y and -o walks with the other "
+    "of the two folder walkers, and has to find the same again. The exit status is 1 at "
+    "the first difference. "
     "Trees are made in a temporary folder, which has to be on a file system that syk "
     "builds an index for."
 )
@@ -222,6 +224,17 @@ def compare(syk, env, root, label, used):
             print("  only with a walk:   ", [line for line in walked[0] if line not in indexed[0]][:10])
             print("  errors:", indexed[1][:4], "against", walked[1][:4])
             print("  exit status:", indexed[2], "against", walked[2])
+            return False
+        if "-o" in query:
+            continue
+        ordered, _ = search(syk, env, root, query + ["-Y", "-o"])
+        ordered = (sorted(ordered[0]), ordered[1], ordered[2])
+        if ordered != walked:
+            print(f"DIFFERENT {label}, query {' '.join(query)} with and without -o, in {root}")
+            print("  only in path order:", [line for line in ordered[0] if line not in walked[0]][:10])
+            print("  only without:      ", [line for line in walked[0] if line not in ordered[0]][:10])
+            print("  errors:", ordered[1][:4], "against", walked[1][:4])
+            print("  exit status:", ordered[2], "against", walked[2])
             return False
     return True
 

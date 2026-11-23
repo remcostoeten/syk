@@ -123,6 +123,16 @@ fn handful(shared: &Shared, found: Vec<Found>, threads: usize) {
     });
 }
 
+#[cfg(target_os = "linux")]
+fn crawled(shared: &Shared, query: &Query) -> bool {
+    crate::crawl::crawl(query, threads(query), &|| Worker::new(shared, AHEAD))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn crawled(_: &Shared, _: &Query) -> bool {
+    false
+}
+
 pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool) -> Outcome {
     let now = SystemTime::now();
     let cutoffs = query
@@ -190,7 +200,7 @@ pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool)
                 break;
             }
         }
-    } else {
+    } else if !crawled(&shared, query) {
         match few(&builder) {
             Some(found) => handful(&shared, found, threads(query)),
             None => builder.build_parallel().run(|| {

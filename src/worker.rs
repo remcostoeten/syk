@@ -687,6 +687,13 @@ impl<'a> Worker<'a> {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl crate::crawl::Sink for Worker<'_> {
+    fn take(&mut self, visit: Visit<'_>) -> bool {
+        Worker::take(self, visit)
+    }
+}
+
 impl Drop for Worker<'_> {
     fn drop(&mut self) {
         while !self.waiting.is_empty() && !self.shared.budget.stopped() {

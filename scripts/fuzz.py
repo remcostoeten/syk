@@ -304,6 +304,7 @@ def main():
     syk = shutil.which(args.syk)
     if not syk:
         sys.exit(f"fuzz: {args.syk} is not an executable.")
+    syk = os.path.abspath(syk)
     random.seed(args.seed)
     used = {"index": 0, "reread": 0, "walk": 0, "spared": 0}
     base = Path(tempfile.mkdtemp(prefix="syk-fuzz-"))

@@ -282,9 +282,9 @@ def trial(syk, env, root, rounds, used):
         kinds = [change(root) for _ in range(random.randint(1, 6))]
         if not compare(syk, env, root, f"round {round} after {', '.join(kinds)}", used):
             return False
-        if random.random() < 0.15:
+        if random.random() < 0.35:
             for view in random.sample(VIEWS, 2):
-                build(syk, env, root, view)
+                used["spared"] += b"not listed again" in build(syk, env, root, view).stdout
             if not compare(syk, env, root, f"round {round} with a new index", used):
                 return False
     return True
@@ -303,7 +303,7 @@ def main():
     if not syk:
         sys.exit(f"fuzz: {args.syk} is not an executable.")
     random.seed(args.seed)
-    used = {"index": 0, "reread": 0, "walk": 0}
+    used = {"index": 0, "reread": 0, "walk": 0, "spared": 0}
     base = Path(tempfile.mkdtemp(prefix="syk-fuzz-"))
     env = dict(
         os.environ,
@@ -320,7 +320,8 @@ def main():
     print(
         f"seed {args.seed}: {'the same' if same else 'DIFFERENT'}. "
         f"{used['index']} searches used an index, {used['reread']} of them read changed "
-        f"folders again, and {used['walk']} fell back to a walk."
+        f"folders again, and {used['walk']} fell back to a walk. "
+        f"{used['spared']} rebuilds kept folders of the old index."
     )
     if not same:
         sys.exit(f"fuzz: the trees are kept in {base}.")

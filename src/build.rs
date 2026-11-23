@@ -5,15 +5,15 @@ use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use ignore::WalkBuilder;
 
-use crate::check::{git, outer, probe, trusted};
+use crate::check::{Opened, PROBES, git, outer, probe, trusted};
 use crate::index::{
     BELOW, FOLDER, Folder, GIT, GITIGNORE, HEAD, IGNORE, Index, MAGIC, RACY, RECORD, Record, Stamp,
-    Watched, key, now, place, store,
+    Trail, Watched, key, now, place, store,
 };
 use crate::item::Form;
 use crate::sign::{self, Signs};
@@ -39,6 +39,54 @@ pub struct Built {
     pub folders: usize,
     pub signed: usize,
     pub kept: usize,
+    pub spared: usize,
+}
+
+struct Reuse {
+    old: Index,
+    whole: HashMap<Vec<u8>, u32>,
+    passed: Mutex<Vec<u32>>,
+}
+
+impl Reuse {
+    fn of(real: &Path, print: &str, threads: usize) -> Option<Reuse> {
+        let Opened::Ready(old) = Index::open(real, print) else {
+            return None;
+        };
+        let full = old.root() == real && old.span == (0..old.entries);
+        if !full {
+            return None;
+        }
+        let root = real.as_os_str().as_bytes();
+        let dirty = old.stale(root, threads);
+        if dirty.len() * 2 > old.folders as usize {
+            return None;
+        }
+        old.fresh(root, &dirty)?;
+        let whole = old.whole(root, &dirty);
+        Some(Reuse {
+            old: *old,
+            whole,
+            passed: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn pass(&self, path: &[u8]) -> bool {
+        let Some(at) = self.whole.get(path) else {
+            return false;
+        };
+        self.passed.lock().is_ok_and(|mut passed| {
+            passed.push(*at);
+            true
+        })
+    }
+
+    fn drain(&self) -> Vec<u32> {
+        self.passed
+            .lock()
+            .map(|mut passed| std::mem::take(&mut *passed))
+            .unwrap_or_default()
+    }
 }
 
 struct Draft {
@@ -47,9 +95,68 @@ struct Draft {
     names: Vec<u8>,
     inside: Vec<Watched>,
     failures: Vec<(u32, String)>,
+    spared: usize,
 }
 
 impl Draft {
+    fn copy(
+        &mut self,
+        reuse: &Reuse,
+        from: u32,
+        open: &mut Vec<u32>,
+        real: &[u8],
+    ) -> Result<(), String> {
+        let old = &reuse.old;
+        let top = old.record(from);
+        let base = self.records.len() as u32;
+        while open.len() > top.depth as usize {
+            if let Some(closed) = open.pop() {
+                self.records[closed as usize].end = base;
+            }
+        }
+        let above = open.last().copied().unwrap_or(0);
+        let mut trail = Trail::new();
+        for step in old.chain(from) {
+            let record = old.record(step);
+            trail.step(real, record.depth as usize, old.name(&record));
+        }
+        for at in from..top.end {
+            let source = old.record(at);
+            let parent = match at == from {
+                true => above,
+                false => source.parent - from + base,
+            };
+            let form = source.form();
+            let name = old.name(&source);
+            let place = base + (at - from);
+            let mut record = self.record(place, name, parent, source.depth as usize, form)?;
+            record.end = source.end - from + base;
+            if form == Form::Dir {
+                let folder = old.folder(source.slot());
+                record.tag = Record::tag(form, self.folders.len() as u32);
+                self.folders.push(Folder {
+                    entry: place,
+                    ..folder
+                });
+                self.spared += 1;
+                trail.step(real, source.depth as usize, name);
+                if folder.flags & PROBES != 0 {
+                    self.watch(trail.as_path(), real.len(), folder.flags);
+                }
+            }
+            self.records.push(record);
+        }
+        let first = old.failures(from);
+        let held = old.failures[first..]
+            .iter()
+            .take_while(|(entry, _)| *entry < top.end);
+        for (entry, text) in held {
+            let text = String::from_utf8_lossy(&old.map[text.clone()]).into_owned();
+            self.failures.push((entry - from + base, text));
+        }
+        Ok(())
+    }
+
     fn record(
         &mut self,
         at: u32,
@@ -138,7 +245,7 @@ struct Reach {
     devices: HashMap<u64, bool>,
 }
 
-fn bound(builder: &mut WalkBuilder, root: &Path, bars: Bars) {
+fn bound(builder: &mut WalkBuilder, root: &Path, bars: Bars, reuse: Option<Arc<Reuse>>) {
     let first = fs::metadata(root).map_or(0, |found| found.dev());
     let reach = Mutex::new(Reach {
         parent: PathBuf::new(),
@@ -165,23 +272,41 @@ fn bound(builder: &mut WalkBuilder, root: &Path, bars: Bars) {
             });
             reach.parent = parent.to_path_buf();
         }
-        entry.depth() == 1 || reach.open
+        let inside = entry.depth() == 1 || reach.open;
+        let known = inside && entry.file_type().is_some_and(|kind| kind.is_dir());
+        let passed = known
+            && reuse
+                .as_ref()
+                .is_some_and(|reuse| reuse.pass(entry.path().as_os_str().as_bytes()));
+        inside && !passed
     });
 }
 
-fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, String> {
+fn gather(
+    root: &Path,
+    started: i64,
+    mut builder: WalkBuilder,
+    reuse: Option<&Reuse>,
+) -> Result<Draft, String> {
     let mut draft = Draft {
         records: Vec::new(),
         folders: Vec::new(),
         names: Vec::new(),
         inside: Vec::new(),
         failures: Vec::new(),
+        spared: 0,
     };
+    let bytes = root.as_os_str().as_bytes();
     let prefix = root.as_os_str().as_bytes().len();
     let mut open: Vec<u32> = Vec::new();
     let mut devices: HashMap<u64, bool> = HashMap::new();
     builder.sort_by_file_name(|left, right| left.cmp(right));
     for found in builder.build() {
+        if let Some(reuse) = reuse {
+            for at in reuse.drain() {
+                draft.copy(reuse, at, &mut open, bytes)?;
+            }
+        }
         let entry = match found {
             Ok(entry) => entry,
             Err(error) => {
@@ -223,6 +348,11 @@ fn gather(root: &Path, started: i64, mut builder: WalkBuilder) -> Result<Draft, 
             open.push(at);
         }
         draft.records.push(record);
+    }
+    if let Some(reuse) = reuse {
+        for at in reuse.drain() {
+            draft.copy(reuse, at, &mut open, bytes)?;
+        }
     }
     let total = draft.records.len() as u32;
     for closed in open {
@@ -361,7 +491,6 @@ pub fn build(
     bars: Bars,
     threads: usize,
 ) -> Result<Built, String> {
-    bound(&mut builder, root, bars);
     let real = fs::canonicalize(root).map_err(|error| format!("{}: {error}", root.display()))?;
     let store = ready()?;
     if !trusted(&real) {
@@ -387,7 +516,12 @@ pub fn build(
     let partial = store.join(format!("{name}.{}.part", std::process::id()));
     let signs = placed.with_extension("sig");
     let old = Signs::load(&signs);
-    let made = gather(root, started, builder).and_then(|draft| {
+    let reuse = (root == real)
+        .then(|| Reuse::of(&real, print, threads))
+        .flatten()
+        .map(Arc::new);
+    bound(&mut builder, root, bars, reuse.clone());
+    let made = gather(root, started, builder, reuse.as_deref()).and_then(|draft| {
         let bytes = encode(&draft, &real, print, started);
         let written = File::options()
             .write(true)
@@ -415,6 +549,7 @@ pub fn build(
             folders: draft.folders.len(),
             signed: signed.as_ref().map_or(0, |signed| signed.signed),
             kept: signed.as_ref().map_or(0, |signed| signed.kept),
+            spared: draft.spared,
         })
     });
     let _ = fs::remove_file(&lock);

@@ -267,6 +267,13 @@ pub fn reindex(mut query: Query, started: Instant) -> ExitCode {
                 shown.display(),
                 started.elapsed().as_secs_f64()
             );
+            if built.spared > 0 {
+                println!(
+                    "{} had not changed and {} not listed again.",
+                    counted(built.spared as u64, "folder", "folders"),
+                    if built.spared == 1 { "was" } else { "were" }
+                );
+            }
             if built.kept > 0 {
                 println!(
                     "{} had not changed and {} not read again.",

@@ -330,6 +330,7 @@ fn a_new_index_keeps_what_the_old_one_knew_of_unchanged_files() {
     std::thread::sleep(Duration::from_millis(2100));
     let second = fixture.run(&["-y"]).0;
     assert!(second.contains("had not changed"), "{second}");
+    assert!(second.contains("not listed again"), "{second}");
     let found = |args: &[&str]| {
         let mut lines = fixture.lines(args);
         lines.sort();

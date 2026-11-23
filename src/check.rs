@@ -13,7 +13,7 @@ use crate::index::{
 };
 use crate::item::Form;
 
-const PROBES: u32 = GITIGNORE | IGNORE | GIT | JJ;
+pub const PROBES: u32 = GITIGNORE | IGNORE | GIT | JJ;
 
 fn below(root: &[u8], rest: &[u8]) -> Vec<u8> {
     let mut path = root.to_vec();
@@ -399,6 +399,41 @@ impl Index {
             fresh.above.remove(path);
         }
         Some(fresh)
+    }
+
+    pub fn whole(&self, root: &[u8], dirty: &[u32]) -> HashMap<Vec<u8>, u32> {
+        let mut touched = vec![false; self.folders as usize];
+        touched[0] = true;
+        for slot in dirty {
+            touched[*slot as usize] = true;
+            for above in self.chain(self.folder(*slot).entry) {
+                touched[self.record(above).slot() as usize] = true;
+            }
+        }
+        let mut whole = HashMap::new();
+        let mut trail = Trail::new();
+        for slot in (0..self.folders).filter(|slot| touched[*slot as usize]) {
+            let entry = self.folder(slot).entry;
+            for above in self.chain(entry) {
+                let record = self.record(above);
+                trail.step(root, record.depth as usize, self.name(&record));
+            }
+            let record = self.record(entry);
+            trail.step(root, record.depth as usize, self.name(&record));
+            let mut child = entry + 1;
+            while child < record.end.min(self.entries) {
+                let inner = self.record(child);
+                if inner.form() != Form::Dir {
+                    child += 1;
+                    continue;
+                }
+                if !touched[inner.slot() as usize] {
+                    whole.insert(below(&trail.path, self.name(&inner)), child);
+                }
+                child = inner.end.max(child + 1);
+            }
+        }
+        whole
     }
 }
 

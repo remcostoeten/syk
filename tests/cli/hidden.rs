@@ -57,3 +57,31 @@ fn a_search_below_a_folder_obeys_the_rules_above_it() {
         }
     }
 }
+
+#[test]
+fn the_global_gitignore_is_read_from_where_git_keeps_it() {
+    let fixture = Fixture::new();
+    let listed = |extra: &[&str]| {
+        let output = fixture
+            .command(&[&["-n", "txt"], extra].concat())
+            .env("HOME", fixture.data())
+            .output()
+            .expect("run syk");
+        let mut lines: Vec<String> = String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect();
+        lines.sort();
+        lines
+    };
+    assert_eq!(listed(&[]), ["needle/keep.txt"]);
+    fixture.outside("git/ignore", "keep.txt\n");
+    assert!(listed(&[]).is_empty() && listed(&["-o"]).is_empty());
+    assert_eq!(listed(&["-I"]).len(), 2);
+    fixture.outside("git/config", "[core]\n\tExcludesFile = ~/other\n");
+    fixture.outside("other", "nothing\n");
+    assert_eq!(listed(&[]), ["needle/keep.txt"]);
+    assert_eq!(listed(&[]), listed(&["-o"]));
+    fixture.outside("other", "needle\n");
+    assert!(listed(&[]).is_empty() && listed(&["-o"]).is_empty());
+}

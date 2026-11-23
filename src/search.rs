@@ -125,7 +125,7 @@ fn handful(shared: &Shared, found: Vec<Found>, threads: usize) {
 
 #[cfg(target_os = "linux")]
 fn crawled(shared: &Shared, query: &Query) -> bool {
-    crate::crawl::crawl(query, threads(query), &|| Worker::new(shared, AHEAD))
+    crate::crawl::crawl(query, &|| threads(query), &|| Worker::new(shared, AHEAD))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -189,10 +189,10 @@ pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool)
     let sorted = query.walk.sort && !gather;
     let (stored, advice) = stored(query, sorted);
     let reread = stored.as_ref().map(|stored| stored.dirty.len());
-    let mut builder = walker(query);
     if let Some(stored) = stored {
         replay(&shared, query, stored, sorted);
     } else if sorted {
+        let mut builder = walker(query);
         builder.sort_by_file_name(|left, right| left.cmp(right));
         let mut worker = Worker::new(&shared, 0);
         for result in builder.build() {
@@ -201,6 +201,7 @@ pub fn search(query: &Query, plan: Compiled, view: View, pass: Pass, keep: bool)
             }
         }
     } else if !crawled(&shared, query) {
+        let builder = walker(query);
         match few(&builder) {
             Some(found) => handful(&shared, found, threads(query)),
             None => builder.build_parallel().run(|| {

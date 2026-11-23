@@ -1,4 +1,7 @@
+use std::fs;
 use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
+use std::sync::OnceLock;
 
 use ignore::WalkBuilder;
 use ignore::overrides::{Override, OverrideBuilder};
@@ -72,8 +75,36 @@ pub fn walker(query: &Query) -> WalkBuilder {
 }
 
 pub fn threads(query: &Query) -> usize {
+    static CORES: OnceLock<usize> = OnceLock::new();
     match query.walk.threads {
-        0 => std::thread::available_parallelism().map_or(1, |cores| cores.get().min(WORKERS)),
+        0 => *CORES.get_or_init(|| {
+            std::thread::available_parallelism().map_or(1, |cores| cores.get().min(WORKERS))
+        }),
         chosen => chosen,
+    }
+}
+
+fn mentioned(path: PathBuf) -> bool {
+    let word = b"excludesfile";
+    fs::read(path).is_ok_and(|text| {
+        text.windows(word.len())
+            .any(|part| part.eq_ignore_ascii_case(word))
+    })
+}
+
+pub fn excludes_file() -> Option<PathBuf> {
+    let home = std::env::home_dir();
+    let settings = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|folder| !folder.as_os_str().is_empty())
+        .or_else(|| home.as_ref().map(|home| home.join(".config")));
+    let named = home.is_some_and(|home| mentioned(home.join(".gitconfig")))
+        || settings
+            .as_ref()
+            .is_some_and(|settings| mentioned(settings.join("git/config")));
+    // The crate compiles a regular expression to read the setting, which only pays when it is set
+    match named {
+        true => ignore::gitignore::gitconfig_excludes_path(),
+        false => settings.map(|settings| settings.join("git/ignore")),
     }
 }

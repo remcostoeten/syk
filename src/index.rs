@@ -273,7 +273,7 @@ fn outer(root: &Path) -> Vec<Watched> {
         paths.push((settings.join("git/config"), 0));
         paths.push((settings.join("git/ignore"), 0));
     }
-    if let Some(excludes) = ignore::gitignore::gitconfig_excludes_path() {
+    if let Some(excludes) = crate::walk::excludes_file() {
         paths.push((excludes, 0));
     }
     for above in root.ancestors().skip(1) {

@@ -3,7 +3,7 @@ use std::fs::{self, File, FileType};
 use std::io::{BufRead, BufReader};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use ignore::Match;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
@@ -11,7 +11,7 @@ use ignore::overrides::Override;
 
 use crate::group::{Skip, Skips};
 use crate::query::Query;
-use crate::walk::{excludes, skips};
+use crate::walk::{excludes, excludes_file, skips};
 
 #[derive(Default)]
 pub struct Seen {
@@ -180,6 +180,15 @@ impl Base {
     }
 }
 
+fn global(here: &Path) -> Gitignore {
+    let Some(path) = excludes_file().filter(|path| path.is_file()) else {
+        return Gitignore::empty();
+    };
+    let mut builder = GitignoreBuilder::new(here);
+    let _ = builder.add(path);
+    builder.build().unwrap_or_else(|_| Gitignore::empty())
+}
+
 fn verdict<T>(found: Match<T>) -> Option<bool> {
     match found {
         Match::None => None,
@@ -194,29 +203,32 @@ pub struct Rules {
     git: bool,
     skips: Skips,
     excluded: Override,
-    global: Gitignore,
+    global: OnceLock<Gitignore>,
 }
 
 impl Rules {
     pub fn new(query: &Query) -> Rules {
         let hidden = query.walk.hidden || query.walk.all;
         let ignored = query.walk.no_ignore || query.walk.all;
-        let global = match (ignored, std::env::current_dir()) {
-            (false, Ok(here)) => GitignoreBuilder::new(here).build_global().0,
-            _ => Gitignore::empty(),
-        };
         Rules {
             hidden: !hidden,
             active: !ignored,
             git: hidden && !query.walk.all,
             skips: skips(query, Skip::Whole),
             excluded: excludes(query).unwrap_or_else(|_| Override::empty()),
-            global,
+            global: OnceLock::new(),
         }
     }
 
     pub fn active(&self) -> bool {
         self.active
+    }
+
+    fn global(&self) -> &Gitignore {
+        self.global.get_or_init(|| match std::env::current_dir() {
+            Ok(here) => global(&here),
+            Err(_) => Gitignore::empty(),
+        })
     }
 
     fn ruled(
@@ -229,7 +241,7 @@ impl Rules {
         let any_git = layer.map_or(base.any_git, |layer| layer.any_git);
         let loud = layer.is_some_and(|layer| layer.loud)
             || base.rules
-            || (any_git && !self.global.is_empty());
+            || (any_git && !self.global().is_empty());
         if !self.active || !loud {
             return None;
         }
@@ -259,7 +271,7 @@ impl Rules {
             }
         }
         let global = match any_git {
-            true => verdict(self.global.matched(shown, folder)),
+            true => verdict(self.global().matched(shown, folder)),
             false => None,
         };
         ignored.or(tracked).or(excluded).or(global)

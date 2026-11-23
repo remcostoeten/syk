@@ -287,7 +287,11 @@ impl<'a, S: Sink> Crew<'a, S> {
     }
 }
 
-pub fn crawl<S: Sink>(query: &Query, threads: usize, make: &(dyn Fn() -> S + Sync)) -> bool {
+pub fn crawl<S: Sink>(
+    query: &Query,
+    threads: &dyn Fn() -> usize,
+    make: &(dyn Fn() -> S + Sync),
+) -> bool {
     let real = |root: &Path| fs::symlink_metadata(root).is_ok_and(|found| found.is_dir());
     if query.walk.follow || !query.roots.iter().all(|root| real(root)) {
         return false;
@@ -317,11 +321,11 @@ pub fn crawl<S: Sink>(query: &Query, threads: usize, make: &(dyn Fn() -> S + Syn
     let started = Instant::now();
     std::thread::scope(|scope| {
         let mut lead = Crew::new(&pool, make());
-        let mut alone = threads > 1;
+        let mut alone = true;
         while lead.step() {
             if alone && (lead.seen > FEW || started.elapsed() > PATIENCE) {
                 alone = false;
-                for _ in 1..threads {
+                for _ in 1..threads() {
                     scope.spawn(|| {
                         let mut crew = Crew::new(&pool, make());
                         while crew.step() {}
@@ -474,7 +478,7 @@ mod tests {
     fn both(flags: &[&str], root: &str) -> Option<(Vec<Found>, Vec<Found>)> {
         let query = query(flags, root);
         let crawled = Mutex::new(Vec::new());
-        if !crawl(&query, 4, &|| Gather { found: &crawled }) {
+        if !crawl(&query, &|| 4, &|| Gather { found: &crawled }) {
             return None;
         }
         let walked = Mutex::new(Vec::new());
@@ -556,7 +560,7 @@ mod tests {
         let found = Mutex::new(Vec::new());
         let tried = |flags: &[&str], name: &str| {
             let root = base.join(name).display().to_string();
-            crawl(&query(flags, &root), 2, &|| Gather { found: &found })
+            crawl(&query(flags, &root), &|| 2, &|| Gather { found: &found })
         };
         assert!(!tried(&[], "file") && !tried(&[], "link") && !tried(&[], "missing"));
         assert!(!tried(&["-L"], "real") && found.lock().expect("a lock").is_empty());

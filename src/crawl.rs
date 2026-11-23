@@ -232,6 +232,21 @@ impl<'a, S: Sink> Crew<'a, S> {
             }
         };
         let layer = self.layer(&folder, path);
+        if !self.children(&folder, layer) {
+            return false;
+        }
+        match broken {
+            Some(error) => {
+                let failure = format!("{}: {error}", path.display());
+                self.sink.take(Visit::Failure(&failure))
+            }
+            None => true,
+        }
+    }
+
+    fn children(&mut self, folder: &Folder, layer: Option<Arc<Layer>>) -> bool {
+        let pool = self.pool;
+        let base = &pool.bases[folder.root];
         self.path.clear();
         self.path.extend(&folder.path);
         if !self.path.ends_with(b"/") {
@@ -298,13 +313,7 @@ impl<'a, S: Sink> Crew<'a, S> {
             pool.open.fetch_add(1, Ordering::SeqCst);
             self.local.push(Task::Files(files));
         }
-        match broken {
-            Some(error) => {
-                let failure = format!("{}: {error}", path.display());
-                self.sink.take(Visit::Failure(&failure))
-            }
-            None => true,
-        }
+        true
     }
 
     fn visit(&mut self, files: Files) -> bool {

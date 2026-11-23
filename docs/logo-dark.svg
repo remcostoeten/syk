@@ -1,7 +1,57 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="syk logo">
-  <rect width="128" height="128" rx="28" fill="#111416"/>
-  <rect x="24" y="35" width="68" height="11" rx="5.5" fill="#e9ebea"/>
-  <rect x="24" y="58.5" width="80" height="11" rx="5.5" fill="#8b9391"/>
-  <rect x="24" y="82" width="36" height="11" rx="5.5" fill="#4c5351"/>
-  <rect x="70" y="20" width="7" height="88" rx="3.5" fill="#22d3ee"/>
+  <defs>
+    <clipPath id="sq">
+      <path d="M 64,0 C 98,0 112,0 120,8 C 128,16 128,30 128,64 C 128,98 128,112 120,120 C 112,128 98,128 64,128 C 30,128 16,128 8,120 C 0,112 0,98 0,64 C 0,30 0,16 8,8 C 16,0 30,0 64,0 Z"/>
+    </clipPath>
+    <linearGradient id="bg" x1="16" y1="0" x2="112" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22124d"/>
+      <stop offset="55%" stop-color="#130a30"/>
+      <stop offset="100%" stop-color="#09051a"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="50%" cy="56%" r="54%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0.48"/>
+      <stop offset="50%" stop-color="#38bdf8" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#09051a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="orb" x1="30" y1="22" x2="90" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffd166"/>
+      <stop offset="28%" stop-color="#fb7185"/>
+      <stop offset="62%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="35%" cy="28%" r="55%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.58"/>
+      <stop offset="45%" stop-color="#fde68a" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cyan" cx="72%" cy="88%" r="50%">
+      <stop offset="0%" stop-color="#67e8f9" stop-opacity="0.9"/>
+      <stop offset="60%" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="0" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#c4b5fd" stop-opacity="0.34"/>
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0.2"/>
+    </linearGradient>
+    <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="7.5"/>
+    </filter>
+    <pattern id="dots" width="12" height="12" patternUnits="userSpaceOnUse">
+      <circle cx="6" cy="6" r="1.2" fill="#a78bfa" opacity="0.14"/>
+    </pattern>
+  </defs>
+  <g clip-path="url(#sq)">
+    <rect width="128" height="128" fill="url(#bg)"/>
+    <rect width="128" height="128" fill="url(#dots)"/>
+    <rect width="128" height="128" fill="url(#halo)"/>
+    <path d="M 80,28 C 66,30 47,38 36,52 C 25,66 25,86 37,99 C 49,111 71,112 85,101 C 99,90 103,71 95,54 C 91,46 93,37 99,31 C 93,28 87,27 80,28 Z" fill="#7c3aed" opacity="0.58" filter="url(#glow)"/>
+    <path d="M 80,22 C 66,24 47,32 36,46 C 25,60 25,80 37,93 C 49,105 71,106 85,95 C 99,84 103,65 95,48 C 91,40 93,31 99,25 C 93,22 87,21 80,22 Z" fill="url(#orb)"/>
+    <path d="M 80,22 C 66,24 47,32 36,46 C 25,60 25,80 37,93 C 49,105 71,106 85,95 C 99,84 103,65 95,48 C 91,40 93,31 99,25 C 93,22 87,21 80,22 Z" fill="url(#shine)"/>
+    <path d="M 80,22 C 66,24 47,32 36,46 C 25,60 25,80 37,93 C 49,105 71,106 85,95 C 99,84 103,65 95,48 C 91,40 93,31 99,25 C 93,22 87,21 80,22 Z" fill="url(#cyan)"/>
+    <path d="M 80,22 C 66,24 47,32 36,46 C 25,60 25,80 37,93 C 49,105 71,106 85,95 C 99,84 103,65 95,48 C 91,40 93,31 99,25 C 93,22 87,21 80,22 Z" fill="none" stroke="#ffffff" stroke-opacity="0.34" stroke-width="1.4"/>
+    <rect x="52" y="57" width="11.5" height="23" rx="5.75" fill="#170d38"/>
+    <rect x="71" y="57" width="11.5" height="23" rx="5.75" fill="#170d38"/>
+    <circle cx="55.5" cy="62" r="2.1" fill="#e0e7ff" opacity="0.62"/>
+    <circle cx="74.5" cy="62" r="2.1" fill="#e0e7ff" opacity="0.62"/>
+    <path d="M 64,0 C 98,0 112,0 120,8 C 128,16 128,30 128,64 C 128,98 128,112 120,120 C 112,128 98,128 64,128 C 30,128 16,128 8,120 C 0,112 0,98 0,64 C 0,30 0,16 8,8 C 16,0 30,0 64,0 Z" fill="none" stroke="url(#rim)" stroke-width="2.5"/>
+  </g>
 </svg>

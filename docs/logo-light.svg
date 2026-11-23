@@ -1,7 +1,42 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="syk logo">
-  <rect width="128" height="128" rx="28" fill="#f1f2ef"/>
-  <rect x="24" y="35" width="68" height="11" rx="5.5" fill="#15181a"/>
-  <rect x="24" y="58.5" width="80" height="11" rx="5.5" fill="#6a7270"/>
-  <rect x="24" y="82" width="36" height="11" rx="5.5" fill="#b4b9b6"/>
-  <rect x="70" y="20" width="7" height="88" rx="3.5" fill="#0891b2"/>
+  <defs>
+    <clipPath id="sq">
+      <path d="M 64,0 C 98,0 112,0 120,8 C 128,16 128,30 128,64 C 128,98 128,112 120,120 C 112,128 98,128 64,128 C 30,128 16,128 8,120 C 0,112 0,98 0,64 C 0,30 0,16 8,8 C 16,0 30,0 64,0 Z"/>
+    </clipPath>
+    <linearGradient id="bg" x1="0" y1="0" x2="128" y2="128" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#faf8ff"/>
+      <stop offset="100%" stop-color="#ebe5ff"/>
+    </linearGradient>
+    <linearGradient id="orb" x1="30" y1="22" x2="90" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffd166"/>
+      <stop offset="28%" stop-color="#fb7185"/>
+      <stop offset="62%" stop-color="#c084fc"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+    <radialGradient id="shine" cx="35%" cy="28%" r="55%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.58"/>
+      <stop offset="45%" stop-color="#fde68a" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="cyan" cx="72%" cy="88%" r="50%">
+      <stop offset="0%" stop-color="#67e8f9" stop-opacity="0.9"/>
+      <stop offset="60%" stop-color="#38bdf8" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="glow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="5.5"/>
+    </filter>
+  </defs>
+  <g clip-path="url(#sq)">
+    <rect width="128" height="128" fill="url(#bg)"/>
+    <path d="M 80,27 C 66,29 47,37 36,51 C 25,65 25,85 37,98 C 49,110 71,111 85,100 C 99,89 103,70 95,53 C 91,45 93,36 99,30 C 93,27 87,26 80,27 Z" fill="#7c3aed" opacity="0.28" filter="url(#glow)"/>
+    <path d="M 80,22 C 66,24 47,32 36,46 C 25,60 25,80 37,93 C 49,105 71,106 85,95 C 99,84 103,65 95,48 C 91,40 93,31 99,25 C 93,22 87,21 80,22 Z" fill="url(#orb)"/>
+    <path d="M 80,22 C 66,24 47,32 36,46 C 25,60 25,80 37,93 C 49,105 71,106 85,95 C 99,84 103,65 95,48 C 91,40 93,31 99,25 C 93,22 87,21 80,22 Z" fill="url(#shine)"/>
+    <path d="M 80,22 C 66,24 47,32 36,46 C 25,60 25,80 37,93 C 49,105 71,106 85,95 C 99,84 103,65 95,48 C 91,40 93,31 99,25 C 93,22 87,21 80,22 Z" fill="url(#cyan)"/>
+    <path d="M 80,22 C 66,24 47,32 36,46 C 25,60 25,80 37,93 C 49,105 71,106 85,95 C 99,84 103,65 95,48 C 91,40 93,31 99,25 C 93,22 87,21 80,22 Z" fill="none" stroke="#ffffff" stroke-opacity="0.45" stroke-width="1.4"/>
+    <rect x="52" y="57" width="11.5" height="23" rx="5.75" fill="#170d38"/>
+    <rect x="71" y="57" width="11.5" height="23" rx="5.75" fill="#170d38"/>
+    <circle cx="55.5" cy="62" r="2.1" fill="#e0e7ff" opacity="0.62"/>
+    <circle cx="74.5" cy="62" r="2.1" fill="#e0e7ff" opacity="0.62"/>
+    <path d="M 64,0 C 98,0 112,0 120,8 C 128,16 128,30 128,64 C 128,98 128,112 120,120 C 112,128 98,128 64,128 C 30,128 16,128 8,120 C 0,112 0,98 0,64 C 0,30 0,16 8,8 C 16,0 30,0 64,0 Z" fill="none" stroke="#6d28d9" stroke-opacity="0.18" stroke-width="2.5"/>
+  </g>
 </svg>

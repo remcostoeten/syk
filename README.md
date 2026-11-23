@@ -1,91 +1,127 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/logo-dark.svg" />
-    <img src="docs/logo-light.svg" width="88" alt="syk logo" />
-  </picture>
-</p>
+# syk
 
-<h1 align="center">syk</h1>
+**syk**  
+*noun / verb* · /sɪk/  
 
-**Syk** *(verb)*
-/sik/, *Frisian, from "sykje", to search.*
+from West Frisian *sykje* /ˈsikjə/ “to search, to seek”  
 
-A command line tool that searches folder names, file names and file contents in one pass. You give it a pattern, a path and filters in any order, and it works out which is which.
+1. a fast Rust CLI that searches folder names, file names and file contents in one pass  
+2. the act of finding things extremely quickly  
 
-<p align="center">
-  <img src="https://shieldcn.dev/github/remcostoeten/syk/release.svg?font=jetbrains-mono" alt="release" />
-  <img src="https://shieldcn.dev/github/remcostoeten/syk/ci.svg?font=jetbrains-mono" alt="CI" />
-  <img src="https://shieldcn.dev/github/remcostoeten/syk/license.svg?font=jetbrains-mono" alt="license" />
-  <img src="https://shieldcn.dev/badge/core-Rust-black.svg?font=jetbrains-mono&logo=rust" alt="core: Rust" />
-  <img src="https://shieldcn.dev/badge/search-ripgrep%20crates-black.svg?font=jetbrains-mono" alt="search: ripgrep crates" />
-  <img src="https://shieldcn.dev/badge/runs%20on-Linux%20and%20macOS-black.svg?font=jetbrains-mono" alt="runs on: Linux and macOS" />
-</p>
-
-<p align="center">
-  <img src="docs/demo.gif" width="100%" alt="syk searches for login, narrows a content search to files named route, searches a log that is piped in, and lists log files older than 30 days" />
-</p>
-<p align="center">
-  <sub>Recorded with VHS in bash.</sub>
-</p>
-
-`syk foo` looks for foo in folder names, in file names and in the lines of files, and prints every hit. It applies ignore rules and searches lines with the crates behind ripgrep, so hidden, ignored and binary files are skipped unless you ask for them.
-
-- **Arguments in any order.** `syk foo src/ .ts +10kb -2h` is a pattern, a path, an extension, a minimum size and a maximum age, recognised by their shape.
-- **One target or several.** `-n`, `-d` and `-c` search names, folders or contents only, and `-n route -c auth` prints the lines matching auth in files named route.
-- **Groups of names to skip.** Dependency folders and caches such as `node_modules` and `__pycache__` are skipped without an ignore file, lock files are found by name while their contents stay out of the results, and `-u deps` searches a group again.
-- **An index of your home folder.** syk keeps a list of the names and a signature of the text of every file below your home folder in `~/.cache/syk`, built in the background after your first search. Later searches check each folder in it for changes and read only the ones that changed, and a search of contents reads only the files that can hold its pattern. `syk -A` lists the indexes, `syk -A clear` removes them.
-- **Forgiving patterns.** Lower case matches any case, a pattern that is not a valid regular expression is searched as plain text, and a spelling one edit away is tried when nothing is found.
-- **Ranked results.** A name search in a terminal is ordered by how well the name matches, how recent the file is and what you picked before, with the best result next to your prompt.
-- **Act on a result.** `-b` lets you choose one from a list, `-1` prints the best path, `-O` opens it in your editor at the matching line and `-f` runs a command on the results.
-- **Piped input.** `cat app.log | syk error -` searches what is piped in, and prints each match as it arrives.
-- **Your current changes.** `syk -Q todo` searches only the files that git reports as changed or new.
-- **Language filters.** `syk auth -e typescript` covers `.ts`, `.tsx`, `.mts` and `.cts`, and `-e web` covers markup, styles and scripts.
-- **Output for scripts.** Piped output is plain `path:line:text`, `-J` prints JSON and `-0` separates paths with NUL bytes.
-- **Help you can page through.** `syk -h` opens in a pager with section jumps and search, every flag has its own page, and `syk foo -x` shows how the arguments are read without searching.
-
-`scripts/demo.sh` walks through every flag in a throwaway project.
-
-## Install
-
-### Prebuilt binary
+[![Crates.io](https://img.shields.io/crates/v/syk-search.svg)](https://crates.io/crates/syk-search)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey)]()
 
 ```bash
-curl --proto '=https' --tlsv1.2 -LsSf https://github.com/remcostoeten/syk/releases/latest/download/syk-search-installer.sh | sh
+syk foo src/ .ts +10kb -2h
 ```
 
-### Arch Linux
+Arguments in any order. Recognised by shape.  
+One tool for names, folders, and contents.
 
-```bash
-yay -S syk-bin
-```
+---
 
-### From crates.io
+### Why syk?
+
+Most search tools do one job well.  
+**syk** does three — and does them together.
+
+| You want…                    | Traditional way              | syk way                  |
+|-----------------------------|------------------------------|--------------------------|
+| Find files by name          | `fd` / `find`                | `syk -n`                 |
+| Find folders                | `fd -t d`                    | `syk -d`                 |
+| Search contents             | `rg` / `grep`                | `syk -c`                 |
+| All of the above at once    | Pipe tools together          | Just `syk`               |
+
+---
+
+### Features at a glance
+
+- **Smart argument parsing** — order doesn’t matter  
+  `syk auth src/ .rs -2h` just works
+- **Combined filters** — they narrow each other  
+  `syk -d api -c auth` → only search for “auth” under folders named “api”
+- **Sensible defaults** — skips hidden, ignored, binary, dependency folders, caches and lock-file contents  
+  (use `-u` to bring any group back)
+- **Background index** — lives in `~/.cache/syk`  
+  Only re-reads folders that actually changed
+- **Smart ranking** — name results ordered by match quality, recency and past picks
+- **Interactive & scriptable**
+  - `-b` → fuzzy picker
+  - `-O` → open editor at the matching line
+  - `-f` → run a command on every result
+  - `-J` / `-0` → JSON or NUL-separated output
+
+---
+
+### Installation
 
 ```bash
 cargo install syk-search
 ```
 
-The crate is called `syk-search`, and the command it installs is `syk`. `cargo binstall syk-search` downloads the built program instead of compiling it.
+---
 
-`syk --setup` then adds tab completion and the `s` jump command to your shell, and `syk --setup man` installs the manual page.
-
-## Development
-
-Rust 1.88 or newer.
+### Quick examples
 
 ```bash
-cargo test                                     # unit tests and end-to-end tests
-cargo clippy --all-targets                     # lints
-scripts/demo.sh --fast                         # run every documented command once
-scripts/bench.py --html docs/benchmarks.html   # time searches next to ripgrep, ugrep, git grep, fd, bfs, find, plocate and grep
-scripts/fuzz.py                                # change random trees and compare the index with both walkers
-git config core.hooksPath .githooks            # format on commit, lint on push
+# Find TypeScript files larger than 10 kb modified in the last 2 hours
+syk .ts +10kb -2h
+
+# Search for "auth" only inside folders named "api"
+syk -d api -c auth
+
+# Interactive picker
+syk -b todo
+
+# Open matching line in your editor
+syk -O "fn main"
+
+# JSON output for scripts
+syk -J -c "TODO"
 ```
 
-The results of the last benchmark run are on the [benchmark page](https://remcostoeten.github.io/syk/benchmarks.html).
+---
 
-<br/>
+### Performance
 
-xxx,<br/>
-[Remco Stoeten](https://remcostoeten.com)<br/>
-<small>MIT</small>
+Measured 2026-11-23 · median of 15 runs · 16-thread machine
+
+#### Name search in `/usr`
+
+| Case                  | **syk + index** | syk   | fd    | bfs   | find   |
+|-----------------------|-----------------|-------|-------|-------|--------|
+| Rare name             | **11.0**        | 56.4  | 131.4 | 432.6 | 904.7  |
+| Regex on names        | **14.6**        | 68.4  | 156.7 | 384.7 | 884.0  |
+| Folder names          | **14.2**        | 71.6  | 162.0 | 340.9 | 1048.1 |
+| Extension + size      | **25.1**        | 71.1  | 194.4 | 1023.1| 1076.4 |
+
+#### Content search (~81 000 files in `~/.cargo/registry/src`)
+
+| Case                      | **syk + index** | syk   | ripgrep | ugrep |
+|---------------------------|-----------------|-------|---------|-------|
+| Regex, all files          | **44.9**        | 121.5 | 143.1   | 298.8 |
+| Regex, one thread         | **224.0**       | 729.8 | 947.8   | 1010.1|
+| Whole word                | **35.3**        | 110.0 | 139.1   | 218.3 |
+| Regex, `.rs` only         | **30.4**        | 73.0  | 92.3    | 161.1 |
+| Two words on one line     | **56.0**        | 118.5 | 170.6   | 228.2 |
+
+> When the index is warm, syk is usually the fastest tool in the room.  
+> Without the index it still beats or matches ripgrep in most real-world cases.
+
+---
+
+### Exit codes
+
+| Code | Meaning          |
+|------|------------------|
+| 0    | Matches found    |
+| 1    | No matches       |
+| 2    | Error            |
+
+---
+
+### License
+
+MIT
+

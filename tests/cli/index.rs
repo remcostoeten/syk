@@ -321,6 +321,28 @@ fn an_index_repeats_the_errors_below_a_folder_inside_it() {
 }
 
 #[test]
+fn a_new_index_keeps_what_the_old_one_knew_of_unchanged_files() {
+    let fixture = Fixture::new();
+    std::thread::sleep(Duration::from_millis(2100));
+    let first = fixture.run(&["-y"]).0;
+    assert!(!first.contains("not read again"), "{first}");
+    fixture.file("src/api/route.ts", "another needle in the route\n");
+    std::thread::sleep(Duration::from_millis(2100));
+    let second = fixture.run(&["-y"]).0;
+    assert!(second.contains("had not changed"), "{second}");
+    let found = |args: &[&str]| {
+        let mut lines = fixture.lines(args);
+        lines.sort();
+        lines
+    };
+    for pattern in ["another needle", "needle", "login", "nothing here"] {
+        let indexed = found(&["-c", pattern, "-l"]);
+        assert_eq!(indexed, found(&["-c", pattern, "-l", "-Y"]), "{pattern}");
+        assert!(!indexed.is_empty(), "{pattern}");
+    }
+}
+
+#[test]
 fn a_search_with_hidden_entries_has_an_index_of_its_own() {
     let fixture = Fixture::new();
     std::thread::sleep(Duration::from_millis(2100));

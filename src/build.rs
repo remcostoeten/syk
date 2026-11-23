@@ -16,7 +16,7 @@ use crate::index::{
     Watched, key, now, place, store,
 };
 use crate::item::Form;
-use crate::sign;
+use crate::sign::{self, Signs};
 use crate::walk::Bars;
 
 const KEPT: usize = 24;
@@ -37,6 +37,7 @@ pub struct Built {
     pub entries: usize,
     pub folders: usize,
     pub signed: usize,
+    pub kept: usize,
 }
 
 struct Draft {
@@ -352,6 +353,8 @@ pub fn build(
     let started = now();
     let placed = store.join(format!("{name}.idx"));
     let partial = store.join(format!("{name}.{}.part", std::process::id()));
+    let signs = placed.with_extension("sig");
+    let old = Signs::load(&signs);
     let made = gather(root, started, builder).and_then(|draft| {
         let bytes = encode(&draft, &real, print, started);
         let written = File::options()
@@ -365,12 +368,11 @@ pub fn build(
             let _ = fs::remove_file(&partial);
             return Err(format!("{}: {error}", store.display()));
         }
-        let _ = fs::remove_file(placed.with_extension("sig"));
+        let _ = fs::remove_file(&signs);
         let signed = Index::load(&placed).and_then(|index| {
-            let signed = sign::build(&index, root.as_os_str().as_bytes(), threads, &partial)
-                .and_then(|signed| {
-                    fs::rename(&partial, placed.with_extension("sig")).map(|()| signed)
-                });
+            let root = root.as_os_str().as_bytes();
+            let signed = sign::build(&index, root, threads, &partial, old.as_ref())
+                .and_then(|signed| fs::rename(&partial, &signs).map(|()| signed));
             if signed.is_err() {
                 let _ = fs::remove_file(&partial);
             }
@@ -379,7 +381,8 @@ pub fn build(
         Ok(Built {
             entries: draft.records.len(),
             folders: draft.folders.len(),
-            signed: signed.unwrap_or(0),
+            signed: signed.as_ref().map_or(0, |signed| signed.signed),
+            kept: signed.as_ref().map_or(0, |signed| signed.kept),
         })
     });
     let _ = fs::remove_file(&lock);

@@ -265,6 +265,13 @@ pub fn reindex(mut query: Query, started: Instant) -> ExitCode {
                 shown.display(),
                 started.elapsed().as_secs_f64()
             );
+            if built.kept > 0 {
+                println!(
+                    "{} had not changed and {} not read again.",
+                    counted(built.kept as u64, "file", "files"),
+                    if built.kept == 1 { "was" } else { "were" }
+                );
+            }
             ExitCode::SUCCESS
         }
         Err(reason) => {

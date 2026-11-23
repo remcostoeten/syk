@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::fs::{self, File, Metadata};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -22,7 +23,7 @@ const BINARY: u8 = 0xFF;
 const STRIDE: u32 = 256;
 const FIRST: usize = 4096;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, Default)]
 pub struct Seal {
     modified: i64,
     changed: i64,
@@ -70,12 +71,30 @@ fn hash(gram: u32) -> u32 {
     mixed ^ mixed >> 13
 }
 
+// Swaps the rows and the columns of a square of 8 by 8 bits
+fn flip(mut square: u64) -> u64 {
+    let mut swap = (square ^ square >> 7) & 0x00AA_00AA_00AA_00AA;
+    square ^= swap ^ swap << 7;
+    swap = (square ^ square >> 14) & 0x0000_CCCC_0000_CCCC;
+    square ^= swap ^ swap << 14;
+    swap = (square ^ square >> 28) & 0x0000_0000_F0F0_F0F0;
+    square ^ swap ^ swap << 28
+}
+
+fn squares(bytes: usize, stride: usize) -> impl Iterator<Item = (usize, usize)> {
+    // Blocks of one cache line keep the rows that are written close together
+    (0..bytes).step_by(64).flat_map(move |block| {
+        (0..stride).flat_map(move |group| (block..bytes.min(block + 64)).map(move |at| (at, group)))
+    })
+}
+
 fn width(class: usize) -> usize {
     SMALLEST << class
 }
 
 enum Signed {
     Text(u8, Vec<u8>),
+    Kept(u8, u32),
     Binary,
     Unknown,
 }
@@ -212,20 +231,37 @@ struct Mark {
 struct Draft {
     marks: Vec<Mark>,
     major: [Vec<u8>; CLASSES],
+    kept: Vec<Mark>,
     held: usize,
+    spared: usize,
 }
 
 impl Draft {
+    fn place(&mut self, class: u8, bytes: &[u8]) -> u32 {
+        let major = &mut self.major[usize::from(class)];
+        let column = major.len() / (width(usize::from(class)) / 8);
+        major.extend(bytes);
+        column as u32
+    }
+
     fn add(&mut self, entry: u32, seal: Seal, signed: Signed) {
+        self.spared += usize::from(matches!(signed, Signed::Kept(..)));
         let (class, column) = match signed {
             Signed::Unknown => return,
-            Signed::Binary => (BINARY, 0),
+            Signed::Binary | Signed::Kept(BINARY, _) => (BINARY, 0),
             Signed::Text(class, bytes) => {
-                let major = &mut self.major[usize::from(class)];
-                let column = major.len() / (width(usize::from(class)) / 8);
                 self.held += bytes.len();
-                major.extend(bytes);
-                (class, column as u32)
+                (class, self.place(class, &bytes))
+            }
+            Signed::Kept(class, column) => {
+                self.held += width(usize::from(class)) / 8;
+                let mark = Mark {
+                    entry,
+                    column,
+                    class,
+                    seal,
+                };
+                return self.kept.push(mark);
             }
         };
         self.marks.push(Mark {
@@ -236,15 +272,42 @@ impl Draft {
         });
     }
 
+    fn restore(&mut self, old: &Signs) {
+        let mut kept = std::mem::take(&mut self.kept);
+        kept.sort_unstable_by_key(|mark| mark.class);
+        for marks in kept.chunk_by(|left, right| left.class == right.class) {
+            let class = marks[0].class;
+            let bytes = width(usize::from(class)) / 8;
+            let upright = old.upright(usize::from(class));
+            for mark in marks {
+                let start = mark.column as usize * bytes;
+                let Some(sign) = upright.get(start..start + bytes) else {
+                    continue;
+                };
+                let column = self.place(class, sign);
+                self.marks.push(Mark {
+                    entry: mark.entry,
+                    column,
+                    class,
+                    seal: mark.seal,
+                });
+            }
+        }
+    }
+
     fn turned(&self, class: usize) -> Vec<u8> {
         let bytes = width(class) / 8;
-        let columns = self.major[class].len() / bytes;
-        let stride = columns.div_ceil(8);
+        let major = &self.major[class];
+        let stride = (major.len() / bytes).div_ceil(8);
         let mut rows = vec![0u8; width(class) * stride];
-        for (column, sign) in self.major[class].chunks_exact(bytes).enumerate() {
-            for (at, byte) in sign.iter().enumerate().filter(|(_, byte)| **byte != 0) {
-                for bit in (0..8).filter(|bit| byte >> bit & 1 == 1) {
-                    rows[(at * 8 + bit) * stride + column / 8] |= 1 << (column % 8);
+        for (at, group) in squares(bytes, stride) {
+            let signs = major[group * 8 * bytes..].chunks_exact(bytes).take(8);
+            let square = signs.enumerate().fold(0u64, |square, (column, sign)| {
+                square | u64::from(sign[at]) << (8 * column)
+            });
+            if square != 0 {
+                for (bit, byte) in flip(square).to_le_bytes().into_iter().enumerate() {
+                    rows[(at * 8 + bit) * stride + group] = byte;
                 }
             }
         }
@@ -287,7 +350,19 @@ impl Draft {
     }
 }
 
-pub fn build(index: &Index, root: &[u8], threads: usize, partial: &Path) -> io::Result<usize> {
+pub struct Built {
+    pub signed: usize,
+    pub kept: usize,
+}
+
+pub fn build(
+    index: &Index,
+    root: &[u8],
+    threads: usize,
+    partial: &Path,
+    old: Option<&Signs>,
+) -> io::Result<Built> {
+    let known = old.map(Signs::known).unwrap_or_default();
     let next = AtomicU32::new(0);
     let full = AtomicBool::new(false);
     let draft = Mutex::new(Draft::default());
@@ -307,7 +382,11 @@ pub fn build(index: &Index, root: &[u8], threads: usize, partial: &Path) -> io::
                         &mut |entry, path| {
                             let settled = |seal: &Seal| !seal.recent(index.built());
                             if let Some(seal) = Seal::read(path).filter(settled) {
-                                found.push((entry, seal, signer.sign(path, seal.size)));
+                                let signed = match known.get(&seal) {
+                                    Some((class, column)) => Signed::Kept(*class, *column),
+                                    None => signer.sign(path, seal.size),
+                                };
+                                found.push((entry, seal, signed));
                             }
                         },
                     );
@@ -324,8 +403,13 @@ pub fn build(index: &Index, root: &[u8], threads: usize, partial: &Path) -> io::
             });
         }
     });
-    let draft = draft.into_inner().unwrap_or_default();
-    draft.write(partial, index.built(), index.entries())
+    let mut draft = draft.into_inner().unwrap_or_default();
+    let kept = draft.spared;
+    if let Some(old) = old {
+        draft.restore(old);
+    }
+    let signed = draft.write(partial, index.built(), index.entries())?;
+    Ok(Built { signed, kept })
 }
 
 pub struct Signs {
@@ -336,14 +420,16 @@ pub struct Signs {
 
 impl Signs {
     pub fn open(path: &Path, built: i64, entries: u32) -> Option<Signs> {
+        let same =
+            |signs: &Signs| long(&signs.map, 8) as i64 == built && word(&signs.map, 16) == entries;
+        Signs::load(path).filter(same)
+    }
+
+    pub fn load(path: &Path) -> Option<Signs> {
         let file = File::open(path).ok()?;
         // The file is replaced by a rename and never changed in place
         let map = unsafe { Mmap::map(&file) }.ok()?;
-        let same = map.len() >= HEAD
-            && &map[..8] == MAGIC
-            && long(&map, 8) as i64 == built
-            && word(&map, 16) == entries;
-        if !same {
+        if map.len() < HEAD || &map[..8] != MAGIC {
             return None;
         }
         let marks = word(&map, 20) as usize;
@@ -371,6 +457,36 @@ impl Signs {
                 size: long(bytes, 40),
             },
         })
+    }
+
+    fn known(&self) -> HashMap<Seal, (u8, u32)> {
+        let marks = (0..self.marks).filter_map(|at| self.mark(at));
+        marks
+            .map(|mark| (mark.seal, (mark.class, mark.column)))
+            .collect()
+    }
+
+    fn upright(&self, class: usize) -> Vec<u8> {
+        let bytes = width(class) / 8;
+        let (columns, offset) = self.rows[class];
+        let stride = columns.div_ceil(8);
+        let mut major = vec![0u8; columns * bytes];
+        let Some(rows) = self.map.get(offset..offset + width(class) * stride) else {
+            return major;
+        };
+        for (at, group) in squares(bytes, stride) {
+            let square = (0..8).fold(0u64, |square, bit| {
+                square | u64::from(rows[(at * 8 + bit) * stride + group]) << (8 * bit)
+            });
+            if square != 0 {
+                for (column, byte) in flip(square).to_le_bytes().into_iter().enumerate() {
+                    if let Some(found) = major.get_mut((group * 8 + column) * bytes + at) {
+                        *found = byte;
+                    }
+                }
+            }
+        }
+        major
     }
 
     fn seek(&self, entry: u32) -> usize {
@@ -513,6 +629,48 @@ mod tests {
                 .ruling(4, &mut 3)
                 .is_some_and(|ruled| !ruled.binary)
         );
+        fs::remove_dir_all(folder).expect("remove the folder");
+    }
+
+    #[test]
+    fn signs_of_unchanged_files_move_to_the_next_index() {
+        let folder = scratch("kept");
+        let texts: [&[u8]; 5] = [
+            b"first file with a needle\n",
+            b"second file without one\n",
+            b"binary\0needle",
+            b"third file, needle again\n",
+            b"fourth file\n",
+        ];
+        let seal = |inode: usize| Seal {
+            inode: inode as u64,
+            ..Seal::default()
+        };
+        let mut draft = Draft::default();
+        for (entry, text) in texts.iter().enumerate() {
+            draft.add(entry as u32, seal(entry), signed(&folder, "text", text));
+        }
+        let path = folder.join("signs");
+        draft.write(&path, 7, 5).expect("write the signs");
+        let old = Signs::load(&path).expect("load the signs");
+        let known = old.known();
+        let mut next = Draft::default();
+        for entry in [4usize, 2, 0, 3] {
+            let (class, column) = known[&seal(entry)];
+            next.add(10 - entry as u32, seal(entry), Signed::Kept(class, column));
+        }
+        next.add(20, seal(9), signed(&folder, "new", b"a new needle\n"));
+        assert_eq!(next.spared, 4);
+        next.restore(&old);
+        let path = folder.join("next");
+        assert_eq!(next.write(&path, 8, 21).expect("write the signs"), 5);
+        let signs = Signs::open(&path, 8, 21).expect("open the signs");
+        let verdicts = signs.judge(&need::of("needle", false));
+        let mut hint = 0;
+        let ruled: Vec<(u32, bool)> = (0..21)
+            .filter_map(|entry| Some((entry, verdicts.ruling(entry, &mut hint)?.binary)))
+            .collect();
+        assert_eq!(ruled, [(6, false), (8, true)]);
         fs::remove_dir_all(folder).expect("remove the folder");
     }
 

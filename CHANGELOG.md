@@ -13,6 +13,8 @@
 - A name search for a plain word no longer goes through the regular expression engine, and every thread keeps its own patterns, which makes searches of names without an index faster.
 - `docs/benchmarks.html` is measured again on this version, and also compares ugrep, git grep, bfs and plocate.
 - A tagged release publishes itself to crates.io and the AUR once the binaries are built.
+- Releases include static Linux builds, which the install script uses on systems with an older glibc.
+- `cargo binstall syk-search` downloads the built program, and every release archive has a GitHub attestation.
 
 ## 0.1.2
 

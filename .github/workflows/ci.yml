@@ -38,3 +38,30 @@ jobs:
         env:
           SYK: ${{ github.workspace }}/target/debug/syk
       - run: python3 scripts/fuzz.py target/debug/syk --seed 1 --trees 1 --rounds 4
+
+  minimum:
+    name: Rust 1.88
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: cargo test --locked
+
+  static:
+    name: Static Linux build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+      - run: cargo test --locked --target x86_64-unknown-linux-musl
+      - run: cargo check --locked --target aarch64-unknown-linux-musl

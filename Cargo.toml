@@ -11,6 +11,11 @@ keywords = ["search", "grep", "find", "regex", "cli"]
 categories = ["command-line-utilities", "filesystem"]
 exclude = [".github", ".githooks", "docs", "packaging", "scripts", "dist-workspace.toml"]
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/syk-search-{ target }.tar.xz"
+bin-dir = "syk-search-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "txz"
+
 [[bin]]
 name = "syk"
 path = "src/main.rs"

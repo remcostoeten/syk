@@ -259,8 +259,8 @@ impl Draft {
         head.extend(entries.to_le_bytes());
         head.extend((self.marks.len() as u32).to_le_bytes());
         head.extend([0u8; 8]);
-        for class in 0..CLASSES {
-            let columns = self.major[class].len() / (width(class) / 8);
+        for (class, major) in self.major.iter().enumerate() {
+            let columns = major.len() / (width(class) / 8);
             head.extend((columns as u32).to_le_bytes());
         }
         head.resize(HEAD, 0);

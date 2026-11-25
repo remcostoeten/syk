@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.4
+
+This release changes how syk looks in the terminal. Searching works the same as in 0.1.3.
+
+- The banner above the help and `--setup` shows the new logo. Matches, folders and line numbers use colours that go with it.
+- `syk --setup welcome` shows a welcome card with a few commands to try first. `--setup` shows the same card after it writes the shell setup.
+- The install script ends with a hint to run `syk --setup`, and the AUR package shows the welcome card after it installs.
+
 ## 0.1.3
 
 This release is about using syk in more places. It can search what is piped in, the index now works on macOS, and two new filters narrow a search to the files you are working on or to one language. Building an index again now lists only the folders that changed.
